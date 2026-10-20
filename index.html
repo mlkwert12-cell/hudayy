@@ -2606,4 +2606,23 @@ boot();
 <script>
 if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){});});}
 </script>
+<!-- تحميل مكتبة Supabase -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<script>
+  // 1. التحقق من الـ Service Worker أولاً إذا كنت ترغب في ذلك
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+      // يمكنك إضافة كود تسجيل الـ Service Worker هنا إذا لزم الأمر
+  }
+
+  // 2. بيانات الاتصال بقاعدة بيانات Supabase
+  const SUPABASE_URL = 'https://sphugxtrnooyeljnbvdh.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_6issjgasfZ10VXZy3Jfq3Q_FCKRG0u1';
+
+  // 3. إنشاء الاتصال مع استخدام اسم متغير آمن (supabaseClient) لتجنب التعارض
+  const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  // 4. التحقق من نجاح الاتصال
+  console.log("تم الاتصال بـ Supabase بنجاح", supabaseClient);
+</script>
 </body></html>
