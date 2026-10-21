@@ -10303,6 +10303,25 @@ window.__i18n={tr:tr,setLang:setLang};
     recorder.start();function frame(now){var sec=(now-start)/1000;vcDrawFrame(ctx,canvas.width,canvas.height,d,sec);if(sec<16&&recorder.state==='recording')requestAnimationFrame(frame);else if(recorder.state==='recording')recorder.stop();}requestAnimationFrame(frame);if(typeof toast==='function')toast('جارٍ تسجيل شهادة الفيديو لمدة 16 ثانية…');
   }
   ACT.vcPlay=vcAnimate;ACT.vcRecord=vcRecord;ACT.vcPrint=function(){window.print();};
+  // أعد رسم القائمة بعد تسجيل القسم؛ boot() في الملف الأساسي يعمل قبل هذا الملحق.
+  try{if(typeof renderNav==='function')renderNav();if(typeof render==='function')render();}catch(e){console.error('video certificate init:',e);}
+  // حذف التسجيلات الصوتية التي تجاوز عمرها سبعة أيام من بيانات التطبيق.
+  if(!window.__anwarRecordingExpiryStarted){
+    window.__anwarRecordingExpiryStarted=true;
+    window.__anwarRecordingExpiryTimer=setInterval(function(){
+      if(!S||!S.loaded||!S.loaded.recordings||!Array.isArray(S.recordings))return;
+      var cutoff=Date.now()-7*24*60*60*1000;
+      S.recordings.slice().forEach(function(r){
+        var ts=Number(r.ts)||Date.parse(r.date||'');
+        if(ts&&ts<cutoff&&!r.__expiryDeleting){
+          r.__expiryDeleting=true;
+          Data.del('recordings',r.id).then(function(){
+            S.recordings=S.recordings.filter(function(x){return x.id!==r.id;});
+          }).catch(function(e){r.__expiryDeleting=false;console.warn('تعذر حذف تسجيل منتهي:',e);});
+        }
+      });
+    },60000);
+  }
 })();
 </script>
 
