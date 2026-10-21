@@ -2158,7 +2158,7 @@ function showLogin(msg){
         '<input id="a_selfno" name="selfno" type="text" autocapitalize="none" autocomplete="username" dir="ltr" placeholder="1001 / 2001 / 3001 / name@mail.com" required>'+
       '</div>'+
       '<div class="fld"><label for="a_pass">كلمة المرور</label>'+
-        '<input id="a_pass" name="password" type="password" autocomplete="current-password" dir="ltr" placeholder="0000" required>'+
+        '<input id="a_pass" name="password" type="password" autocomplete="current-password" dir="ltr" placeholder="000000" required>'+
       '</div>'+
       '<div class="ferr" id="aerr" role="alert">'+esc(msg||'')+'</div>'+
       '<div class="mact" style="margin-top:14px">'+
@@ -2167,7 +2167,7 @@ function showLogin(msg){
       '</div>'+
       '<p class="note" style="margin-top:10px">'+
         'الطالب: 1001 وما بعده · المعلم: 2001 وما بعده · المشرف: 3001 وما بعده.<br>'+
-        'كلمة المرور المبدئية: <b dir="ltr">0000</b> (تتغيّر عند أول دخول).'+
+        'كلمة المرور المبدئية: <b dir="ltr">000000</b> (تتغيّر عند أول دخول).'+
       '</p>'+
     '</form>'
   );
@@ -2186,6 +2186,9 @@ function showLogin(msg){
     er.textContent='';busy(true);
     var em=isEm?raw.toLowerCase():authEmail(no);
     SB.client.auth.signInWithPassword({email:em,password:pw}).then(function(r){
+      if(r.error&&pw==='0000'){return SB.client.auth.signInWithPassword({email:em,password:'000000'});}
+      return r;
+    }).then(function(r){
       busy(false);
       if(r.error){er.textContent=sbMsg(r.error);return;}
       gate(r.data.session);
@@ -2606,7 +2609,7 @@ function studentForm(id){
     wide:1,
     fields:[
       {k:'name',l:'اسم الطالب الكامل',req:1,full:1},
-      {k:'self_no',l:'الرقم الذاتي (للدخول)',t:'number',ro:1,hint:'يُولَّد تلقائياً. كلمة المرور المبدئية: 0000'},
+      {k:'self_no',l:'الرقم الذاتي (للدخول)',t:'number',ro:1,hint:'يُولَّد تلقائياً. كلمة المرور المبدئية: 000000'},
       {k:'no',l:'رقم الطالب الداخلي',t:'number',ro:1,hint:'يُولَّد تلقائياً'},
       {k:'status',l:'حالة القبول',t:'select',o:ADM},
       {k:'gender',l:'الجنس',t:'select',o:['ذكر','أنثى']},
@@ -2663,11 +2666,24 @@ function tryCreateAuthAccount(selfNo,name,role){
     p_self_no:String(selfNo),
     p_name:name,
     p_role:role,
-    p_initial_password:'0000'
-  }).catch(function(e){
-    console.warn('auth account creation not available:',e);
+    p_initial_password:'000000'
+  }).then(function(r){
+    if(r&&r.error){
+      console.warn('auth account creation failed:',r.error);
+      toast('تعذّر إنشاء حساب الدخول للرقم '+selfNo+': '+(r.error.message||r.error));
+    }
+    return r;
+  },function(e){
+    console.warn('auth account creation failed:',e);
+    toast('تعذّر إنشاء حساب الدخول للرقم '+selfNo+': '+((e&&e.message)||e));
   });
 }
+ACT.retryAuth=function(d){
+  if(!isAtLeast(4))return;
+  tryCreateAuthAccount(d.no,d.name||'',d.role||'cs').then(function(r){
+    if(!r||!r.error)toast('تمت محاولة إنشاء حساب الدخول — كلمة المرور المبدئية 000000');
+  });
+};
 /* ============================================================
    ACT: newStudent/editStudent/delStudent
    ============================================================ */
@@ -3725,7 +3741,7 @@ function vSup(){
       .some(function(x){return String(x||'').toLowerCase().indexOf(q)>=0;});
   }).sort(function(a,b){return a.name<b.name?-1:1;});
   var h=vh('المشرفون',
-    'مشرفو المراكز والمناطق، لكل واحد رقم ذاتي وكلمة مرور مبدئية 0000',
+    'مشرفو المراكز والمناطق، لكل واحد رقم ذاتي وكلمة مرور مبدئية 000000',
     canManage?A(
       '<button type="button" class="btn" data-act="exportSupervisorsXlsx">'+ico('dl')+'تحميل (Excel)</button>'+
       '<button type="button" class="btn pri" data-act="newSup">'+ico('plus')+'مشرف جديد</button>'
@@ -3775,6 +3791,7 @@ function vSup(){
     {h:'',a:1,f:function(t){
       return canManage?A(
         '<button type="button" class="ibtn" data-act="editSup" data-id="'+t.id+'" aria-label="تعديل">'+ico('edit')+'</button>'+
+        (isAtLeast(4)?'<button type="button" class="ibtn" data-act="retryAuth" data-no="'+esc(t.self_no)+'" data-name="'+esc(t.name)+'" data-role="'+supRole(t.level)+'" title="إعادة إنشاء حساب الدخول" aria-label="إعادة إنشاء حساب الدخول">↻</button>':'')+
         '<button type="button" class="ibtn" data-act="delSup" data-id="'+t.id+'" aria-label="حذف">'+ico('trash')+'</button>'
       ):'';
     }}
@@ -3806,7 +3823,7 @@ function supForm(id){
     wide:1,
     fields:[
       {k:'name',l:'الاسم',req:1,full:1},
-      {k:'self_no',l:'الرقم الذاتي (للدخول)',t:'number',ro:1,hint:'يُولَّد تلقائياً. كلمة المرور المبدئية: 0000'},
+      {k:'self_no',l:'الرقم الذاتي (للدخول)',t:'number',ro:1,hint:'يُولَّد تلقائياً. كلمة المرور المبدئية: 000000'},
       {k:'phone',l:'الهاتف',t:'tel'},
       {k:'level',l:'المستوى',t:'select',o:levels},
       {k:'deptId',l:'الإدارة (لمدير الإدارة)',t:'select',o:[['','—']].concat(S.depts.slice().sort(byName_).map(function(d){return [d.id,d.name];}))},
@@ -4026,7 +4043,7 @@ function teacherForm(id){
     wide:1,
     fields:[
       {k:'name',l:'اسم المعلم',req:1,full:1},
-      {k:'self_no',l:'الرقم الذاتي (للدخول)',t:'number',ro:1,hint:'يُولَّد تلقائياً. كلمة المرور المبدئية: 0000'},
+      {k:'self_no',l:'الرقم الذاتي (للدخول)',t:'number',ro:1,hint:'يُولَّد تلقائياً. كلمة المرور المبدئية: 000000'},
       {k:'phone',l:'الهاتف',t:'tel'},
       {k:'centerId',l:'المركز',t:'select',o:centerOpts,
         hint:'المعلم ينتمي لمركز، ويرى طلاب مركزه فقط عند التسجيل.'},
