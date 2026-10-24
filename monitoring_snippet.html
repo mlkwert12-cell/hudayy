@@ -1,0 +1,60 @@
+<script>
+/* [MON-BEGIN] مراقبة الأخطاء والأداء (3.4) — Sentry يُحمَّل بعد اكتمال الصفحة، فلا يبطئ فتح التطبيق.
+   لا يعمل أي شيء إلا إذا وُضع DSN. لا تُرسل أسماء الطلاب ولا نصوص الصفحة: المعرّف المجهول والدور فقط. */
+(function(){
+  var CFG={
+    dsn:'',                       // ← ضع DSN من Sentry (Settings > Client Keys). فارغ = المراقبة معطّلة
+    release:'anwar@2026.10',      // ← غيّره مع كل إصدار ليظهر في التقارير
+    env:(location.hostname==='localhost'||location.hostname==='127.0.0.1')?'dev':'production',
+    tracesSampleRate:0.05,        // 5% من الجلسات لقياس الأداء (Web Vitals)
+    replayErrorRate:1.0,          // تسجيل الجلسة عند حدوث خطأ فقط
+    replayBaseRate:0.0,           // لا تسجيل عشوائي (خصوصية الطلاب)
+    src:'https://browser.sentry-cdn.com/8.55.0/bundle.tracing.replay.min.js'
+  };
+  var pending=[],ready=false,user=null;
+  var IGNORE=[/ResizeObserver loop/i,/Non-Error promise rejection/i,/Failed to fetch/i,/NetworkError/i,/Load failed/i,/AbortError/i,/chrome-extension:/i];
+  function init(){
+    if(!window.Sentry||!CFG.dsn)return;
+    Sentry.init({
+      dsn:CFG.dsn,release:CFG.release,environment:CFG.env,
+      sendDefaultPii:false,
+      tracesSampleRate:CFG.tracesSampleRate,
+      replaysSessionSampleRate:CFG.replayBaseRate,replaysOnErrorSampleRate:CFG.replayErrorRate,
+      integrations:[Sentry.browserTracingIntegration(),
+        Sentry.replayIntegration({maskAllText:true,maskAllInputs:true,blockAllMedia:true})],
+      ignoreErrors:IGNORE,
+      beforeSend:function(ev){ try{ if(ev.request&&ev.request.cookies)delete ev.request.cookies; }catch(e){} return ev; },
+      beforeBreadcrumb:function(b){ if(b.category==='ui.input')return null; return b; }
+    });
+    ready=true; if(user)setUser(user);
+    pending.splice(0).forEach(function(p){Sentry.captureMessage(p.m,{level:p.l,tags:p.t});});
+  }
+  function setUser(p){
+    user=p; if(!ready||!p)return;
+    Sentry.setUser({id:String(p.id||p.uid||'').slice(0,36)||undefined});   // بلا اسم ولا بريد
+    Sentry.setTag('role',p.role||'unknown');
+  }
+  window.Mon={
+    user:setUser,
+    /* حدث مهم غير خطأ: مثل فشل حفظ حصة أو تحوّل النقاط للمحلي */
+    event:function(msg,tags,level){ if(!CFG.dsn)return; if(ready)Sentry.captureMessage(msg,{level:level||'warning',tags:tags||{}}); else if(pending.length<20)pending.push({m:msg,l:level||'warning',t:tags||{}}); },
+    /* قياس مدة عملية (حفظ، فتح) كمقياس مخصص */
+    time:function(name,ms){ if(ready&&Sentry.metrics&&Sentry.metrics.distribution)try{Sentry.metrics.distribution(name,ms,{unit:'millisecond'});}catch(e){} }
+  };
+  /* أخطاء المتصفح التي يجمعها __hbAddErr في رأس الصفحة تُمرَّر لـ Sentry أيضاً */
+  window.addEventListener('hb-error',function(){
+    var l=(window.__hbErrs||[]).slice(-1)[0]; if(!l||!ready)return;
+    if(IGNORE.some(function(r){return r.test(l.m);}))return;
+    Sentry.captureException(new Error(l.m),{tags:{kind:l.k},extra:{src:l.s}});
+  });
+  /* لا نعتمد Sentry لالتقاط window.onerror تلقائياً مرتين: يبقى مثبّتاً افتراضياً ويُلغى تكرار الأحداث تلقائياً (dedupe) */
+  if(!CFG.dsn)return;
+  window.addEventListener('load',function(){
+    setTimeout(function(){
+      var s=document.createElement('script');s.src=CFG.src;s.crossOrigin='anonymous';s.async=true;s.onload=init;
+      document.head.appendChild(s);
+    },1500);
+  });
+})();
+/* [MON-END] */
+</script>

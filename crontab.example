@@ -1,0 +1,3 @@
+# crontab -e على الكمبيوتر القديم (Linux). الساعة 03:00 يومياً نسخة، وكل أحد 04:00 اختبار استعادة.
+0 3 * * *  /opt/anwar-backup/backup.sh >> /var/log/anwar-backup.log 2>&1
+0 4 * * 0  /opt/anwar-backup/restore_test.sh >> /var/log/anwar-restore.log 2>&1

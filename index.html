@@ -421,6 +421,32 @@ body.is-teacher [data-act^="export"]{display:none!important}
 .ov.splash .splash-logo{width:min(60vw,240px);height:min(60vw,240px);box-shadow:0 10px 34px rgba(0,0,0,.14);animation:splashPulse 1.8s ease-in-out infinite}
 @keyframes splashPulse{0%,100%{transform:scale(.96);opacity:.9}50%{transform:scale(1);opacity:1}}
 @media (prefers-reduced-motion:reduce){.ov.splash .splash-logo{animation:none}}
+/* زر الرجوع */
+#topBack{display:none;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);cursor:pointer;flex:none;padding:0}
+#topBack.on{display:inline-flex}
+#topBack svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+/* قوائم منسدلة */
+.nav h4.navh{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;padding:7px 12px;margin:6px 0 0;border-radius:8px}
+.nav h4.navh::after{content:"›";display:inline-block;font-size:15px;line-height:1;transform:rotate(-90deg);transition:transform .15s}
+.nav h4.navh[aria-expanded="true"]::after{transform:rotate(90deg)}
+.nav h4.navh:hover{background:rgba(18,149,143,.08)}
+.navgrp{display:flex;flex-direction:column;gap:2px}
+.navgrp[hidden]{display:none}
+.shell.collapsed .navgrp[hidden]{display:flex!important}
+/* شريط الجوال: نقاط ثلاث */
+.tabbar .tb-dots{display:none}
+@media (max-width:860px){
+  .tabbar .tb-dots{display:block;flex:0 0 34px;background:none;border:0;color:inherit;font-size:22px;line-height:1;padding:6px 0;cursor:pointer}
+  body.tab-icons .tabbar button:not(.tb-dots) span{display:none}
+  body.tab-collapsed{padding-bottom:44px}
+  body.tab-collapsed .tabbar{background:transparent;border:0;box-shadow:none;justify-content:flex-end;padding-top:2px;padding-bottom:calc(2px + env(safe-area-inset-bottom,0px))}
+  body.tab-collapsed .tabbar button:not(.tb-dots){display:none}
+  body.tab-collapsed .tabbar .tb-dots{background:var(--side);border-radius:999px;width:36px;height:36px;flex:0 0 36px;box-shadow:0 2px 8px rgba(0,0,0,.18)}
+  body.tab-collapsed #toast{bottom:calc(48px + env(safe-area-inset-bottom,0px))}
+}
+/* الشهادة داخل التطبيق */
+.certbox{position:relative;width:100%}
+.certbox .cert{position:absolute;top:0;right:0;width:1123px!important;max-width:none!important;height:794px;margin:0!important;transform-origin:top right}
 </style>
 <style id="rpcss">
 .rp{max-width:820px;margin:0 auto;display:flex;flex-direction:column;gap:14px;color:var(--ink)}
@@ -485,6 +511,7 @@ body.is-teacher [data-act^="export"]{display:none!important}
   </aside>
   <div class="work">
     <div class="top noprint">
+      <button type="button" id="topBack" data-act="back" aria-label="رجوع" title="رجوع"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
       <i class="logo logo-top" role="img" aria-label="شعار مؤسسة هدائي بركة"></i>
       <div class="gsearch">
         <svg class="si" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
@@ -1089,7 +1116,11 @@ var Data={
     if(col==='sessions'&&data&&data.status==='تمت'){var gm=window.__sess?window.__sess.guard(data):'';if(gm){var ge=new Error(gm);ge.sessGuard=1;return Promise.reject(ge);}}
     var d=Object.assign({},data);
     delete d.id;
-    if(Data.db)return Data.db.collection(col).doc(id).set(d);
+    if(Data.db){
+      var pw=Data.db.collection(col).doc(id).set(d);
+      if(col==='prog'||col==='attendance')pw=pw.then(function(x){if(typeof SP!=='undefined')SP.clear(true);return x;});
+      return pw;
+    }
     if(!Data.local[col])Data.local[col]={};
     Data.local[col][id]=d;
     Data.saveLocal();
@@ -1117,9 +1148,74 @@ var Data={
       return Promise.resolve();
     }
     var ref=Data.db.collection(col).doc(id);
-    return ref.update({marks:marks}).catch(function(e){
-      if(e&&e.code==='invalid_argument')return ref.set({date:id,marks:marks});
-      throw e;
+    function legacy(){
+      return ref.update({marks:marks}).catch(function(e){
+        if(e&&e.code==='invalid_argument')return ref.set({date:id,marks:marks});
+        throw e;
+      });
+    }
+    /* [fix] دمج ذرّي في الخادم: يمنع ضياع علامات معلمين يحفظون نفس اليوم */
+    if(Data.db.rpc){
+      return Data.db.rpc('merge_marks',{p_col:col,p_id:id,p_marks:marks}).then(function(r){
+        if(r.error){
+          if(r.error.code==='42883'||r.error.code==='PGRST202')return legacy();
+          var x=new Error(r.error.message||'error');x.code='sb';throw x;
+        }
+        Data.db.mergeLocal(col,id,marks);
+        if(typeof SP!=='undefined')SP.clear(true);
+      });
+    }
+    return legacy();
+  },
+  /* [perf 1.6] حفظ دفعي: عدة سجلات في طلب شبكة واحد */
+  putMany:function(rows){
+    rows=(rows||[]).filter(Boolean);
+    var hasSess=rows.some(function(r){return r.col==='sessions';});
+    if(!Data.db||!Data.db.rpc||hasSess){
+      return Promise.all(rows.map(function(r){return Data.put(r.col,r.id,r.data);}));
+    }
+    var chunks=[];
+    for(var i=0;i<rows.length;i+=200)chunks.push(rows.slice(i,i+200));
+    return chunks.reduce(function(p,ch){
+      return p.then(function(){
+        return Data.db.rpc('docs_upsert_many',{p_rows:ch.map(function(r){
+          var d=Object.assign({},r.data);delete d.id;
+          return {col:r.col,id:r.id,data:d};
+        })}).then(function(x){
+          if(x.error){var e=new Error(x.error.message||'error');e.code='sb';throw e;}
+          var cs={};
+          ch.forEach(function(r){var d=Object.assign({},r.data);delete d.id;Data.db.cacheSet(r.col,r.id,d);cs[r.col]=1;});
+          Data.db.touch(Object.keys(cs));
+        });
+      });
+    },Promise.resolve());
+  },
+  /* [2.3] حفظ الحصة كاملة (حضور + تسميع + واجب + وثيقة الحصة) في معاملة واحدة على الخادم.
+     يرجع {legacy:true} إن لم تتوفر الدالة save_session (فيُستعمل المسار القديم). */
+  saveSessionAtomic:function(sessionId,sessionDoc,date,marks,prog,hw){
+    if(!Data.db||!Data.db.rpc)return Promise.resolve({legacy:true});
+    if(myLevel()<3){var ex=find('sessions',sessionId);if(ex&&window.__sess&&window.__sess.locked(ex)){var le=new Error('الحصة مغلقة: لا يمكن التعديل إلا بعد موافقة مشرف المركز على طلب تعديل.');le.sessGuard=1;return Promise.reject(le);}}
+    if(sessionDoc&&sessionDoc.status==='تمت'){var gm=window.__sess?window.__sess.guard(sessionDoc):'';if(gm){var ge=new Error(gm);ge.sessGuard=1;return Promise.reject(ge);}}
+    var sd=Object.assign({},sessionDoc);delete sd.id;
+    return Data.db.rpc('save_session',{p_session_id:sessionId,p_session:sd,p_date:date,p_marks:marks,p_prog:prog,p_homework:hw}).then(function(r){
+      if(r.error){
+        if(r.error.code==='42883'||r.error.code==='PGRST202')return {legacy:true};
+        var x=new Error(r.error.message||'error');x.code='sb';throw x;
+      }
+      if(Object.keys(marks).length)Data.db.mergeLocal('attendance',date,marks);
+      var keep=function(a){return (Array.isArray(a)?a:[]).filter(function(x){return x.sessionId!==sessionId;});};
+      Object.keys(prog).forEach(function(sid){
+        var b=clone(D.pg[sid]||{});delete b.id;
+        var inc=prog[sid]||{};
+        Data.db.cacheSet('prog',sid,Object.assign({},b,{
+          rec:keep(b.rec).concat(inc.rec||[]),rash:keep(b.rash).concat(inc.rash||[]),
+          exams:b.exams||[],adds:b.adds||[]}));
+      });
+      Object.keys(hw).forEach(function(sid){Data.db.cacheSet('homework',sid,hw[sid]);});
+      Data.db.cacheSet('sessions',sessionId,sd);
+      Data.db.touch(['sessions','prog','homework']);
+      if(typeof SP!=='undefined')SP.clear(true);
+      return {ok:true};
     });
   },
   subscribe:function(){
@@ -1757,6 +1853,69 @@ function pointsOf(sid,f,t){
   o.total=o.att+o.rec+o.exam+o.add+o.streak;
   return o;
 }
+/* [SP-BEGIN] [2.3/2.4] النقاط من الخادم: عند تفعيل app_config.points_server تُجلَب النقاط دفعات من points_many
+   وتُخزَّن مؤقتاً 60 ثانية؛ أي فشل يعيد الحساب المحلي القديم تلقائياً. */
+var SP={
+  on:false,cache:{},rank:{},pend:{},fly:{},rfly:{},timer:0,ttl:60000,
+  key:function(f,t){return (f||'')+'|'+(t||'');},
+  zero:function(){return {att:0,rec:0,exam:0,add:0,streak:0,p:0,l:0,a:0,nRec:0,nExam:0,nAdd:0,total:0};},
+  probe:function(){
+    if(!Data.db||!Data.db.rpc)return Promise.resolve();
+    return Data.db.rpc('points_server_enabled',{}).then(function(r){
+      var on=!r.error&&r.data===true;
+      if(on!==SP.on){SP.on=on;SP.clear();refresh();}
+    },function(){});
+  },
+  clear:function(redraw){SP.cache={};SP.rank={};SP.fly={};SP.rfly={};if(redraw&&SP.on)refresh();},
+  get:function(sid,f,t){
+    var k=SP.key(f,t),g=SP.cache[k],e=g&&g[sid];
+    if(!e||Date.now()-e.at>=SP.ttl)SP.want(sid,f,t);
+    return e?e.v:SP.zero();
+  },
+  want:function(sid,f,t){
+    var k=SP.key(f,t),fk=k+'#'+sid;
+    if(SP.fly[fk])return;
+    SP.fly[fk]=1;
+    (SP.pend[k]=SP.pend[k]||{f:f||'',t:t||'',ids:[]}).ids.push(sid);
+    if(!SP.timer)SP.timer=setTimeout(SP.flush,30);
+  },
+  flush:function(){
+    SP.timer=0;
+    var pend=SP.pend,jobs=[];SP.pend={};
+    Object.keys(pend).forEach(function(k){
+      var p=pend[k];
+      for(var i=0;i<p.ids.length;i+=400){
+        (function(ids){
+          jobs.push(Data.db.rpc('points_many',{p_sids:ids,p_from:p.f||null,p_to:p.t||null}).then(function(r){
+            if(r.error)throw r.error;
+            var g=SP.cache[k]=SP.cache[k]||{},now=Date.now();
+            ids.forEach(function(id){g[id]={v:(r.data||{})[id]||SP.zero(),at:now};delete SP.fly[k+'#'+id];});
+          }));
+        })(p.ids.slice(i,i+400));
+      }
+    });
+    Promise.all(jobs).then(function(){refresh();},function(){SP.on=false;SP.clear();refresh();});
+  },
+  rankOf:function(sid){
+    var e=SP.rank[sid];
+    if(!e||Date.now()-e.at>=SP.ttl){
+      if(!SP.rfly[sid]){
+        SP.rfly[sid]=1;
+        Data.db.rpc('halaqa_rank',{p_sid:sid}).then(function(r){
+          delete SP.rfly[sid];
+          if(r.error)throw r.error;
+          var d=r.data||{};
+          SP.rank[sid]={v:{rank:d.rank||'—',total:d.of||1},at:Date.now()};
+          refresh();
+        },function(){delete SP.rfly[sid];SP.on=false;SP.clear();refresh();});
+      }
+    }
+    return e?e.v:{rank:'…',total:'…'};
+  }
+};
+var _pointsLocal=pointsOf;
+pointsOf=function(sid,f,t){return (SP.on&&Data.db)?SP.get(sid,f,t):_pointsLocal(sid,f,t);};
+/* [SP-END] */
 /* ============================================================
    memoOf() — خريطة حفظ الطالب
    ============================================================ */
@@ -2413,7 +2572,7 @@ function startApp(role){
   Data.db=SB.adapter;
   render();
   Data.subscribe();
-  SB.adapter.start().catch(function(e){dbError(e);});
+  SB.adapter.start().then(function(){SP.probe();}).catch(function(e){dbError(e);});
   if(myLevel()>=6)sbUsers();
 }
 /* ============================================================
@@ -2433,24 +2592,60 @@ function sbAdapter(cl){
     x.code=(e&&e.code==='42501')?'invalid_argument':'sb';
     return x;
   }
+  /* [perf 1.1/1.5] أعمدة كل دور فقط + مزامنة تزايدية بدل التحميل الكامل */
+  var lastSync='1970-01-01T00:00:00Z', lastFull=0, syncing=false;
+  function colsForRole(){
+    var all=COLS.concat(['settings']);
+    var r=(typeof myRole==='function')?myRole():'';
+    if(r==='student'||r==='parent'){
+      var skip={supervisors:1,tattendance:1,tevals:1,mgrades:1,editRequests:1,msglog:1,msgsched:1};
+      return all.filter(function(c){return !skip[c];});
+    }
+    return all;
+  }
   function load(){
-    var all={},from=0;
+    var all={},from=0,cols=colsForRole(),mx=lastSync;
     function page(){
-      return cl.from('docs').select('col,id,data').order('col').order('id').range(from,from+999).then(function(r){
+      return cl.from('docs').select('col,id,data,updated_at').in('col',cols).order('col').order('id').range(from,from+999).then(function(r){
         if(r.error)throw fail(r.error);
-        r.data.forEach(function(x){(all[x.col]=all[x.col]||{})[x.id]=x.data;});
+        r.data.forEach(function(x){
+          (all[x.col]=all[x.col]||{})[x.id]=x.data;
+          if(x.updated_at&&x.updated_at>mx)mx=x.updated_at;
+        });
         if(r.data.length===1000){from+=1000;return page();}
       });
     }
     return page().then(function(){
       cache=all;
       loaded=true;
+      lastSync=mx;
+      lastFull=Date.now();
+      if(typeof SP!=='undefined')SP.clear();
       COLS.concat(['settings']).forEach(notify);
     });
   }
+  function sync(){
+    if(syncing)return Promise.resolve();
+    if(!loaded||Date.now()-lastFull>15*60*1000)return load();
+    syncing=true;
+    var since=new Date(Date.parse(lastSync)-5000).toISOString();
+    return cl.rpc('docs_changed_since',{p_since:since,p_cols:colsForRole()}).then(function(r){
+      if(r.error||!r.data||r.data.length>=5000)return load();
+      var touched={},mx=lastSync;
+      r.data.forEach(function(x){
+        (cache[x.col]=cache[x.col]||{})[x.id]=x.data;
+        touched[x.col]=1;
+        if(x.updated_at&&x.updated_at>mx)mx=x.updated_at;
+      });
+      lastSync=mx;
+      if((touched.attendance||touched.prog)&&typeof SP!=='undefined')SP.clear();
+      Object.keys(touched).forEach(notify);
+    }).then(function(){syncing=false;},function(e){syncing=false;throw e;});
+  }
   function listen(){
+    var flt='col=in.('+colsForRole().join(',')+')';
     cl.channel('docs-sync').on('postgres_changes',
-      {event:'*',schema:'public',table:'docs'},
+      {event:'*',schema:'public',table:'docs',filter:flt},
       function(p){
         var n=(p.new&&p.new.col)?p.new:p.old;
         if(!n||!n.col)return;
@@ -2458,13 +2653,21 @@ function sbAdapter(cl){
           if(cache[n.col])delete cache[n.col][n.id];
         }else{
           (cache[n.col]=cache[n.col]||{})[n.id]=p.new.data;
+          if(p.new.updated_at&&p.new.updated_at>lastSync)lastSync=p.new.updated_at;
         }
         notify(n.col);
       }
-    ).subscribe(function(st){SB.rt=(st==='SUBSCRIBED');});
+    ).subscribe(function(st){
+      var was=SB.rt;
+      SB.rt=(st==='SUBSCRIBED');
+      if(SB.rt&&was===false)sync().catch(function(){});
+    });
     setInterval(function(){
-      if(!SB.rt&&!document.hidden)load().catch(function(){});
+      if(!document.hidden)sync().catch(function(){});
     },120000);
+    document.addEventListener('visibilitychange',function(){
+      if(!document.hidden)sync().catch(function(){});
+    });
   }
   function put(c,id,d){
     return cl.from('docs').upsert({
@@ -2520,6 +2723,13 @@ function sbAdapter(cl){
       }};
     },
     cacheSet:function(c,id,d){(cache[c]=cache[c]||{})[id]=d;},
+    touch:function(cs){(cs||[]).forEach(notify);},
+    rpc:function(n,a){return cl.rpc(n,a);},
+    mergeLocal:function(c,id,marks){
+      var cur=(cache[c]||{})[id]||{date:id};
+      (cache[c]=cache[c]||{})[id]=Object.assign({},cur,{marks:Object.assign({},cur.marks||{},marks)});
+      notify(c);
+    },
     start:function(){return load().then(listen);}
   };
 }
@@ -3059,6 +3269,8 @@ function portalRank(sid,hid){
   var pos=1;rows.forEach(function(r,i){if(r.id===sid)pos=rows.filter(function(x){return x.t>r.t;}).length+1;});
   return {rank:pos,total:rows.length};
 }
+var _portalRankLocal=portalRank;
+portalRank=function(sid,hid){return (SP.on&&Data.db)?SP.rankOf(sid):_portalRankLocal(sid,hid);};
 function vPortal(){
   if(myRole()!=='student'&&myRole()!=='parent'){
     return '<div class="card"><p class="note">هذه الصفحة للطلاب وأولياء الأمور فقط.</p></div>';
@@ -5864,12 +6076,12 @@ VIEWS.tickets=function(){
     if(b)return b;
     b=document.createElement('div');b.id='probBar';b.className='noprint';b.hidden=true;
     b.setAttribute('role','alert');
-    b.style.cssText='position:fixed;inset-inline:12px;bottom:calc(76px + env(safe-area-inset-bottom,0px));z-index:60;'+
-      'display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px 14px;border-radius:12px;'+
-      'background:#7a1f1f;color:#fff;box-shadow:0 6px 20px rgba(0,0,0,.3);font-size:14px';
-    b.innerHTML='<span>حدثت مشكلة في التطبيق.</span>'+
-      '<span style="display:flex;gap:8px"><button type="button" data-act="reportProblem" style="border:0;border-radius:8px;padding:8px 12px;background:#fff;color:#7a1f1f;font-weight:700;cursor:pointer">تواصل مع الدعم</button>'+
-      '<button type="button" data-act="dismissProblem" aria-label="إغلاق" style="border:0;background:none;color:#fff;font-size:18px;cursor:pointer">×</button></span>';
+    b.style.cssText='position:fixed;inset-inline-start:10px;bottom:calc(64px + env(safe-area-inset-bottom,0px));z-index:120;max-width:calc(100vw - 20px);'+
+      'display:flex;gap:6px;align-items:center;padding:3px 4px 3px 10px;border-radius:999px;'+
+      'background:#7a1f1f;color:#fff;box-shadow:0 3px 10px rgba(0,0,0,.25);font-size:12px';
+    b.innerHTML='<span>⚠ مشكلة</span>'+
+      '<span style="display:flex;gap:4px;align-items:center"><button type="button" data-act="reportProblem" style="border:0;border-radius:999px;padding:4px 10px;background:#fff;color:#7a1f1f;font-weight:700;font-size:12px;cursor:pointer">تواصل مع الدعم</button>'+
+      '<button type="button" data-act="dismissProblem" aria-label="إغلاق" style="border:0;background:none;color:#fff;font-size:16px;line-height:1;padding:0 4px;cursor:pointer">×</button></span>';
     document.body.appendChild(b);
     return b;
   }
@@ -5886,7 +6098,7 @@ VIEWS.tickets=function(){
     var errs=(window.__hbErrs||[]).slice();
     var lines=[
       'بلاغ تلقائي من التطبيق',
-      'الصفحة: '+(S.view||'')+' | الوضع: '+(S.mode||'')+' | الدور: '+myRole(),
+      'الصفحة: '+pageLabel()+' ('+(S.view||'')+') | الوضع: '+(S.mode||'')+' | الدور: '+myRole(),
       'الجهاز: '+navigator.userAgent,
       'الشاشة: '+screen.width+'x'+screen.height+' | متصل: '+(navigator.onLine?'نعم':'لا'),
       'الرابط: '+location.href,
@@ -5923,10 +6135,10 @@ VIEWS.tickets=function(){
     try{
       Promise.resolve(Data.put('tickets',uid(),r)).then(done,function(){queue(r);done();});
     }catch(e){queue(r);done();}
-    // تنبيه واتساب مختصر: لا يحوي تفاصيل المشكلة، التفاصيل في صفحة «تذاكر الدعم»
+    // رسالة واتساب تلقائية: مكان الخطأ + السبب + بيانات المرسل والجهاز
     try{
-      var ph='963994701950';
-      var msg='بلاغ تلقائي من تطبيق حلقات أنوار الهداية\nالمرسل: '+r.byName+'\nالوقت: '+new Date().toLocaleString('ar')+'\nالتفاصيل في صفحة تذاكر الدعم.';
+      var ph=(function(){try{return String(supportPhone()||'963994701950').replace(/\D/g,'');}catch(e){return '963994701950';}})();
+      var msg=waMessage();
       window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg),'_blank');
     }catch(e){}
     window.__hbErrs=[];
@@ -6469,10 +6681,8 @@ ACT.saveSession = function(){
   Object.keys(marks).forEach(function(sid){
     sessionDoc.attendanceCount[marks[sid]] = (sessionDoc.attendanceCount[marks[sid]]||0) + 1;
   });
-  var promises = [];
-  if(Object.keys(marks).length){
-    promises.push(Data.mergeMarks('attendance', st.date, marks));
-  }
+  /* [2.3] نبني إدخالات التسميع والواجب أولاً، ثم تُحفظ كلها في معاملة واحدة (أو بالمسار القديم إن لم تتوفر الدالة) */
+  var plan = {}, hwPlan = {};
   students.forEach(function(e){
     var sid = e.studentId;
     var r = recBy[sid];
@@ -6482,32 +6692,44 @@ ACT.saveSession = function(){
     var talq = st.creditToStudents && st.pageFrom && st.pageTo && !isR &&
       (marks[sid] === 'p' || marks[sid] === 'l');
     if(!r && !had && !talq) return;
-    promises.push(saveProg(sid, function(p){
-      p.rec = p.rec.filter(function(x){return x.sessionId !== sessionId;});
-      p.rash = (p.rash || []).filter(function(x){return x.sessionId !== sessionId;});
-      var base = Date.now();
-      if(r){
-        if(r.track !== 'rash' && (r.t||'new')==='new') promises.push(assignHomework(sid, r.fromPage, r.toPage, r.g, st.date));
-        for(var pn = r.fromPage; pn <= r.toPage; pn++){
-          if(r.track === 'rash'){
-            p.rash.push({id:uid(), d:st.date, page:pn, g:r.g, note:r.note||'', sessionId:sessionId, ts:base+pn});
-          } else {
-            var jp = absToJP(pn);
-            p.rec.push({id:uid(), d:st.date, juz:jp.juz, page:jp.page, g:r.g, t:r.t||'new', note:r.note||'', sessionId:sessionId, ts:base+pn});
-          }
+    var ent = {rec: [], rash: []};
+    var base = Date.now();
+    if(r){
+      if(r.track !== 'rash' && (r.t||'new')==='new') hwPlan[sid] = homeworkDoc(sid, r.fromPage, r.toPage, r.g, st.date).doc;
+      for(var pn = r.fromPage; pn <= r.toPage; pn++){
+        if(r.track === 'rash'){
+          ent.rash.push({id:uid(), d:st.date, page:pn, g:r.g, note:r.note||'', sessionId:sessionId, ts:base+pn});
+        } else {
+          var jp = absToJP(pn);
+          ent.rec.push({id:uid(), d:st.date, juz:jp.juz, page:jp.page, g:r.g, t:r.t||'new', note:r.note||'', sessionId:sessionId, ts:base+pn});
         }
       }
-      if(talq){
-        for(var tn = st.pageFrom; tn <= st.pageTo; tn++){
-          var jq = absToJP(tn);
-          p.rec.push({id:uid(), d:st.date, juz:jq.juz, page:jq.page, g:'good', t:'new', note:'', sessionId:sessionId, src:'talqeen', ts:base+tn});
-        }
+    }
+    if(talq){
+      for(var tn = st.pageFrom; tn <= st.pageTo; tn++){
+        var jq = absToJP(tn);
+        ent.rec.push({id:uid(), d:st.date, juz:jq.juz, page:jq.page, g:'good', t:'new', note:'', sessionId:sessionId, src:'talqeen', ts:base+tn});
       }
-    }));
+    }
+    plan[sid] = ent;
   });
   if(incomplete && !st.id){ st.id = sessionId; S.ui.openSessionId = sessionId; }
-  promises.push(Data.put('sessions', sessionId, sessionDoc));
-  Promise.all(promises).then(function(){
+  function legacySave(){
+    var ps = [];
+    if(Object.keys(marks).length) ps.push(Data.mergeMarks('attendance', st.date, marks));
+    Object.keys(plan).forEach(function(sid){
+      ps.push(saveProg(sid, function(p){
+        p.rec  = p.rec.filter(function(x){return x.sessionId !== sessionId;}).concat(plan[sid].rec);
+        p.rash = (p.rash || []).filter(function(x){return x.sessionId !== sessionId;}).concat(plan[sid].rash);
+      }));
+    });
+    Object.keys(hwPlan).forEach(function(sid){ ps.push(Data.put('homework', sid, hwPlan[sid])); });
+    ps.push(Data.put('sessions', sessionId, sessionDoc));
+    return Promise.all(ps);
+  }
+  Data.saveSessionAtomic(sessionId, sessionDoc, st.date, marks, plan, hwPlan).then(function(res){
+    return (res && res.legacy) ? legacySave() : res;
+  }).then(function(){
     if(incomplete && !auto){
       S.ui.sessSnap = sessSnapKey(st);
       toast('حُفظت البيانات دون إغلاق الحصة'+(unm.length?' — '+unm.length+' طالب بلا حضور/غياب':'')+(nrc.length?' — '+nrc.length+' حاضر بلا تقييم تسميع':''));
@@ -7609,6 +7831,12 @@ function certMarkup(c){
    2) صفحة HTML مستقلة (للطباعة / التحميل)
    ============================================================ */
 function standalone(title, body, page){
+  var h0=standalone0(title, body, page);
+  if(page!=='cert') return h0;
+  return h0.replace('</head>','<style>.cert{width:1123px!important;max-width:none!important;height:794px;margin:0 auto}</style></head>')
+    .replace('</body>','<script>(function(){var W=1123;function f(){var c=document.querySelector(".cert");if(!c)return;c.style.zoom=Math.min(1,(document.documentElement.clientWidth-24)/W);}window.addEventListener("resize",f);window.addEventListener("beforeprint",function(){var c=document.querySelector(".cert");if(c)c.style.zoom=1;});window.addEventListener("afterprint",f);f();})();</scr'+'ipt></body>');
+}
+function standalone0(title, body, page){
   var rpcss = (document.getElementById('rpcss') || {}).textContent || '';
   return '<!doctype html><html lang="ar" dir="rtl"><head>' +
     '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
@@ -10551,15 +10779,19 @@ function teacherOfStudent(sid){
   var h = en.halaqaId && S.halaqat.filter(function(x){ return x.id === en.halaqaId; })[0];
   return (h && h.teacherId) || '';
 }
-function assignHomework(sid, fromPage, toPage, g, date){
+function homeworkDoc(sid, fromPage, toPage, g, date){
   // التسميع الجيد: الواجب هو الصفحة التالية. الإعادة: يعيد الصفحة نفسها.
   var pg = (g === 'redo') ? fromPage : Math.min(604, toPage + 1);
   var jp = absToJP(pg);
-  return Data.put('homework', sid, {
+  return {page: pg, doc: {
     studentId: sid, teacherId: teacherOfStudent(sid), page: pg, juz: jp.juz,
     kind: g === 'redo' ? 'redo' : 'next',
     from: date || today(), ts: Date.now(), by: SB.user ? SB.user.id : 'local'
-  }).then(function(){ return pg; });
+  }};
+}
+function assignHomework(sid, fromPage, toPage, g, date){
+  var h = homeworkDoc(sid, fromPage, toPage, g, date);
+  return Data.put('homework', sid, h.doc).then(function(){ return h.page; });
 }
 function saveRecording(sid, meta, blob, duration){
   var _r = myRole();
@@ -11252,7 +11484,7 @@ if(!S.view || !VIEWS[S.view]){
   }
   /* ---------- الواجهة ---------- */
   var anim=null;
-  function stop(){if(anim){cancelAnimationFrame(anim);anim=null;}}
+  function stop(){if(anim){cancelAnimationFrame(anim);anim=null;}if(window.__vcPrev){try{window.__vcPrev.pause();}catch(e){}window.__vcPrev=null;}}
   function curData(){return teacherData(S.ui.vcTeacher);}
   function paintCard(){
     var c=document.getElementById('vcCard');if(!c)return;
@@ -11285,9 +11517,35 @@ if(!S.view || !VIEWS[S.view]){
     setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},4000);
   }
   function fnm(d,ext){return 'شهادة-'+String(d.name).replace(/[\\/:*?"<>|\s]+/g,'-')+'.'+ext;}
+  /* صوت الشهادة: تلاوة آية (القمر 17 و22) من cdn.islamic.network */
+  var VC_AYAT=[4863,4868];
+  function vcUrl(n){return 'https://cdn.islamic.network/quran/audio/128/ar.alafasy/'+n+'.mp3';}
+  function vcPreviewAudio(){
+    try{
+      var a=new Audio(),i=0;a.crossOrigin='anonymous';a.src=vcUrl(VC_AYAT[0]);
+      a.onended=function(){i++;if(i<VC_AYAT.length){a.src=vcUrl(VC_AYAT[i]);a.play().catch(function(){});}};
+      window.__vcPrev=a;a.play().catch(function(){});
+    }catch(e){}
+  }
+  function vcAudioSetup(done){
+    var fin=false;function end(v){if(fin)return;fin=true;done(v);}
+    try{
+      var AC=window.AudioContext||window.webkitAudioContext;if(!AC)return end(null);
+      var ac=new AC(),dest=ac.createMediaStreamDestination(),el=new Audio(),idx=0;
+      el.crossOrigin='anonymous';el.preload='auto';
+      ac.createMediaElementSource(el).connect(dest);
+      el.onended=function(){idx++;if(idx<VC_AYAT.length){el.src=vcUrl(VC_AYAT[idx]);el.play().catch(function(){});}};
+      el.onerror=function(){end(null);};
+      el.oncanplaythrough=function(){end({stream:dest.stream,
+        play:function(){try{if(ac.resume)ac.resume();}catch(e){}el.play().catch(function(){});},
+        stop:function(){try{el.pause();ac.close();}catch(e){}}});};
+      setTimeout(function(){end(null);},6000);
+      el.src=vcUrl(VC_AYAT[0]);el.load();
+    }catch(e){end(null);}
+  }
   ACT.vcPlay=function(){
     var d=curData(),c=document.getElementById('vcVid');if(!d||!c)return;
-    stop();var ctx=c.getContext('2d'),t0=performance.now(),pg=document.getElementById('vcProg');
+    stop();vcPreviewAudio();var ctx=c.getContext('2d'),t0=performance.now(),pg=document.getElementById('vcProg');
     fontsReady(function(){
       t0=performance.now();
       (function loop(now){
@@ -11317,21 +11575,24 @@ if(!S.view || !VIEWS[S.view]){
     var d=curData(),msg=document.getElementById('vcMsg');if(!d)return;
     if(!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream){toast('تسجيل الفيديو غير مدعوم في هذا المتصفح (مثل الآيفون)؛ احفظ الشهادة كصورة PNG أو جرّب من الحاسوب أو أندرويد.');return;}
     stop();
-    var mime=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm','video/mp4'].filter(function(m){return MediaRecorder.isTypeSupported(m);})[0];
+    var mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm','video/mp4'].filter(function(m){return MediaRecorder.isTypeSupported(m);})[0];
     if(!mime){toast('لا يوجد ترميز فيديو مدعوم في هذا المتصفح.');return;}
     var ext=mime.indexOf('mp4')>=0?'mp4':'webm';
     var cv=document.createElement('canvas');cv.width=1080;cv.height=1920;var ctx=cv.getContext('2d');
-    fontsReady(function(){
-      var rec,chunks=[];
-      try{rec=new MediaRecorder(cv.captureStream(30),{mimeType:mime,videoBitsPerSecond:4000000});}catch(e){toast('تعذّر بدء التسجيل');return;}
+    fontsReady(function(){ vcAudioSetup(function(au){
+      var rec,chunks=[],st=cv.captureStream(30);
+      if(au){try{au.stream.getAudioTracks().forEach(function(tr){st.addTrack(tr);});}catch(e){au=null;}}
+      if(!au)toast('تعذّر تحميل الصوت (يلزم اتصال بالإنترنت)؛ سيُحفظ الفيديو بدون صوت.');
+      try{rec=new MediaRecorder(st,{mimeType:mime,videoBitsPerSecond:4000000});}catch(e){toast('تعذّر بدء التسجيل');return;}
       rec.ondataavailable=function(e){if(e.data&&e.data.size)chunks.push(e.data);};
       rec.onerror=function(){toast('حدث خطأ أثناء التسجيل');};
       rec.onstop=function(){
+        if(au)au.stop();
         var m=document.getElementById('vcMsg');if(m)m.textContent='تم إنشاء الفيديو.';
         var b=new Blob(chunks,{type:mime});if(!b.size){toast('لم يُنتج الفيديو');return;}
         save(b,fnm(d,ext));toast('تم حفظ الفيديو');
       };
-      drawFrame(ctx,cv.width,cv.height,d,0);rec.start(200);
+      drawFrame(ctx,cv.width,cv.height,d,0);rec.start(200);if(au)au.play();
       var t0=performance.now(),pg=document.getElementById('vcProg');
       (function loop(now){
         var sec=(now-t0)/1000;
@@ -11341,7 +11602,7 @@ if(!S.view || !VIEWS[S.view]){
         var p=document.getElementById('vcProg');if(p)p.style.width=(sec/16*100)+'%';
         requestAnimationFrame(loop);
       })(performance.now());
-    });
+    }); });
     void msg;
   };
   // حذف التسجيلات الصوتية التي تجاوز عمرها سبعة أيام من بيانات التطبيق.
@@ -11362,6 +11623,137 @@ if(!S.view || !VIEWS[S.view]){
     },60000);
   }
 })();
+/* ===== رجوع + قوائم منسدلة + شريط الجوال + ملاءمة الشهادة ===== */
+var __hist=[], __lastView=null, __goingBack=false;
+function pageLabel(){
+  var n=NAV.filter(function(x){return x[0]===S.view;})[0];
+  var s=n?n[1]:(S.view||'');
+  try{
+    if(S.ui&&S.ui.session) s+=' — شاشة الحصة المفتوحة';
+    else if(S.modals&&S.modals.length){
+      var m=S.modals[S.modals.length-1], tt=typeof m.title==='function'?m.title():m.title;
+      if(tt) s+=' — نافذة «'+tt+'»';
+    }
+  }catch(e){}
+  return s;
+}
+function waMessage(){
+  var errs=(window.__hbErrs||[]).slice(), last=errs[errs.length-1];
+  var ua=navigator.userAgent||'';
+  var br=/Edg\//.test(ua)?'Edge':/Chrome\//.test(ua)?'Chrome':/Firefox\//.test(ua)?'Firefox':/Safari\//.test(ua)?'Safari':'متصفح';
+  var os=/Android/.test(ua)?'Android':/iPhone|iPad/.test(ua)?'iOS':/Windows/.test(ua)?'Windows':/Mac/.test(ua)?'macOS':/Linux/.test(ua)?'Linux':'';
+  var lines=['بلاغ تلقائي — حلقات أنوار الهداية',
+    '📍 مكان الخطأ: '+pageLabel(),
+    '❗ السبب: '+(last?String(last.m).slice(0,300):'لم يُسجَّل خطأ برمجي (ربما بطء أو انقطاع اتصال)'),
+    last&&last.s?'📄 الموقع في الكود: '+last.s:'',
+    errs.length>1?'🔢 عدد الأخطاء المسجّلة: '+errs.length:'',
+    '👤 المرسل: '+((S.profile&&S.profile.name)||'—')+' ('+roleName(myRole())+')',
+    '📱 الجهاز: '+os+' · '+br+' · '+screen.width+'×'+screen.height+' · '+(navigator.onLine?'متصل':'غير متصل'),
+    '🕒 '+new Date().toLocaleString('ar'),
+    'التفاصيل الكاملة في صفحة «تذاكر الدعم».'];
+  return lines.filter(Boolean).join('\n').slice(0,1500);
+}
+function updateBack(){
+  var b=document.getElementById('topBack'); if(!b) return;
+  var on=(S.modals&&S.modals.length>0)||(S.ui&&S.ui.session)||__hist.length>0;
+  b.classList.toggle('on',!!on);
+}
+ACT.back=function(){
+  if(S.modals&&S.modals.length){M.pop();return;}
+  if(S.ui&&S.ui.session){ACT.closeSession();return;}
+  if(!__hist.length) return;
+  __goingBack=true; S.view=__hist.pop(); render(); window.scrollTo(0,0);
+};
+var __render0=render;
+render=function(){
+  if(__lastView===null) __lastView=S.view;
+  if(__lastView!==S.view){
+    if(!__goingBack){ if(__hist[__hist.length-1]!==__lastView) __hist.push(__lastView); if(__hist.length>30) __hist.shift(); }
+    __lastView=S.view;
+  }
+  __goingBack=false;
+  var r=__render0.apply(this,arguments);
+  try{updateBack();}catch(e){}
+  return r;
+};
+/* قوائم النظام المنسدلة + أوضاع الشريط السفلي بالجوال */
+function tabMode(){try{return localStorage.getItem('tabMode')||'full';}catch(e){return 'full';}}
+function applyTabMode(){
+  var m=tabMode(), b=document.body; if(!b) return;
+  b.classList.toggle('tab-icons',m==='icons');
+  b.classList.toggle('tab-collapsed',m==='collapsed');
+}
+ACT.tabMode=function(){
+  var next={full:'icons',icons:'collapsed',collapsed:'full'}[tabMode()]||'full';
+  try{localStorage.setItem('tabMode',next);}catch(e){}
+  applyTabMode(); render();
+};
+function enhanceNav(){
+  var nav=document.getElementById('nav');
+  if(nav){
+    var open=S.navOpen=S.navOpen||{}, kids=[].slice.call(nav.children), groups=[], cur=null;
+    kids.forEach(function(el){
+      if(el.tagName==='H4'){cur={h:el,items:[]};groups.push(cur);}
+      else if(cur) cur.items.push(el);
+    });
+    groups.forEach(function(g){
+      var name=groups.indexOf(g)+'|'+g.h.textContent.trim();
+      var active=g.items.some(function(b){return b.getAttribute&&b.getAttribute('aria-current')==='page';});
+      var isOpen=active||!!open[name];
+      var wrap=document.createElement('div'); wrap.className='navgrp'; wrap.hidden=!isOpen;
+      g.h.parentNode.insertBefore(wrap,g.h.nextSibling);
+      g.items.forEach(function(b){wrap.appendChild(b);});
+      g.h.classList.add('navh'); g.h.setAttribute('role','button'); g.h.setAttribute('tabindex','0');
+      g.h.setAttribute('aria-expanded',isOpen?'true':'false'); g.h.setAttribute('data-g',name);
+    });
+  }
+  var tb=document.getElementById('tabbar');
+  if(tb&&!tb.querySelector('.tb-dots')){
+    var dots=document.createElement('button'); dots.type='button'; dots.className='tb-dots';
+    dots.setAttribute('data-act','tabMode'); dots.setAttribute('aria-label','خيارات الشريط'); dots.title='إظهار / إخفاء الأسماء والخيارات';
+    dots.textContent='⋮'; tb.appendChild(dots);
+  }
+  applyTabMode();
+}
+function toggleNavGroup(h){
+  var name=h.getAttribute('data-g'), wrap=h.nextElementSibling;
+  if(!wrap||!wrap.classList.contains('navgrp')) return;
+  var open=wrap.hidden; wrap.hidden=!open;
+  h.setAttribute('aria-expanded',open?'true':'false');
+  (S.navOpen=S.navOpen||{})[name]=open;
+}
+document.addEventListener('click',function(ev){
+  var h=ev.target.closest&&ev.target.closest('#nav h4.navh'); if(h) toggleNavGroup(h);
+});
+document.addEventListener('keydown',function(ev){
+  if(ev.key!=='Enter'&&ev.key!==' ') return;
+  var h=ev.target.closest&&ev.target.closest('#nav h4.navh'); if(h){ev.preventDefault();toggleNavGroup(h);}
+});
+var __renderNav0=renderNav;
+renderNav=function(){ __renderNav0.apply(this,arguments); try{enhanceNav();}catch(e){} };
+/* الشهادة تبقى A4 وتتصغّر لتناسب عرض الشاشة */
+var __certQ=false;
+function fitCerts(){
+  var W=1123,H=794;
+  [].slice.call(document.querySelectorAll('#mroot .cert, #main .cert')).forEach(function(c){
+    var box=c.parentNode;
+    if(!box.classList||!box.classList.contains('certbox')){
+      box=document.createElement('div'); box.className='certbox';
+      c.parentNode.insertBefore(box,c); box.appendChild(c);
+    }
+    var avail=box.clientWidth||W, s=Math.min(1,avail/W);
+    c.style.transform='scale('+s+')';
+    c.style.right=Math.max(0,(avail-W*s)/2)+'px';
+    box.style.height=Math.ceil(H*s)+'px';
+  });
+}
+new MutationObserver(function(){
+  if(__certQ) return; __certQ=true;
+  requestAnimationFrame(function(){__certQ=false;try{fitCerts();}catch(e){}});
+}).observe(document.body,{childList:true,subtree:true});
+window.addEventListener('resize',function(){try{fitCerts();}catch(e){}});
+window.addEventListener('orientationchange',function(){setTimeout(function(){try{fitCerts();}catch(e){}},200);});
+
 try{ boot(); }catch(e){ console.error('boot error:', e); try{ localBoot(); }catch(_){} }
 /* ============================================================
    نهاية التطبيق
@@ -11373,7 +11765,7 @@ console.log('الدور:', myRole(), '· الوضع:', S.mode, '· الصفحة:
 <script>
 /* ===== i18n: عربي (أساسي) + Türkçe ===== */
 (function(){
-var TR={"الدعم الفني":"Teknik destek","إرسال تذكرة":"Destek talebi gönder","واتساب الدعم":"Destek WhatsApp","تذاكر الدعم":"Destek talepleri","تدريس حلقة (يعمل كمعلم)":"Halka dersi (öğretmen olarak)","ذكور":"Erkekler","إناث":"Kadınlar","ذكور / إناث":"Erkek / Kadın","ذ":"E","المنطقة: ذكور أم إناث؟":"Bölge: erkek mi kadın mı?","طلبات التعديل":"Düzenleme talepleri","طلب تعديل":"Düzenleme talebi","الحصة مغلقة":"Ders kapalı","موافقة":"Onayla","قيد المراجعة":"İncelemede","الإغلاق التلقائي للحصص":"Derslerin otomatik kapanması","تم الحفظ بنجاح":"Başarıyla kaydedildi","لم يتم الحفظ":"Kaydedilemedi","فشل الحفظ":"Kayıt başarısız","توجد بيانات غير محفوظة. هل تريد الإغلاق دون حفظ؟":"Kaydedilmemiş veriler var. Kaydetmeden kapatılsın mı?","حفظ الحصة":"Dersi kaydet","حلقات أنوار الهداية": "Envarü’l-Hüdâ Halkaları", "مؤسسة هدائي بركة": "Hidayi Bereket Vakfı", "لوحة التحكم": "Kontrol Paneli", "لوحة": "Panel", "الحصص": "Dersler", "الحلقة والتعليم": "Halka ve Eğitim", "الطلاب": "Öğrenciler", "طلاب": "Öğrenci", "الطالب": "Öğrenci", "طالب": "Öğrenci", "طالب جديد": "Yeni öğrenci", "المعلمون": "Öğretmenler", "المعلم": "Öğretmen", "معلم": "Öğretmen", "المشرفون": "Denetmenler", "الرسوم": "Ücretler", "رسوم": "Ücret", "التقارير": "Raporlar", "الحضور": "Devam", "الحفظ": "Ezber", "الحفظ والتسميع": "Ezber ve Okuma", "الكتب": "Kitaplar", "الكتاب": "Kitap", "التسجيلات": "Kayıtlar", "المناطق": "Bölgeler", "المنطقة": "Bölge", "الدفعات": "Ödemeler", "الشهادات": "Sertifikalar", "النظام": "Sistem", "الإعدادات": "Ayarlar", "الإدارات": "Yönetimler", "الإدارة": "Yönetim", "المراكز": "Merkezler", "المركز": "Merkez", "المراكز والحلقات": "Merkezler ve Halkalar", "الحلقات": "Halkalar", "الحلقة": "Halka", "الرسائل": "Mesajlar", "الحسابات": "Hesaplar", "المالية": "Mali", "المزيد": "Daha fazla", "بوابتي": "Portalım", "الإشعارات": "Bildirimler", "الاختبارات": "Sınavlar", "الدروس": "Dersler", "الدرس": "Ders", "حذف": "Sil", "تعديل": "Düzenle", "حفظ": "Kaydet", "إلغاء": "İptal", "إغلاق": "Kapat", "بحث": "Ara", "خروج": "Çıkış", "إعادة": "Yeniden", "إضافة نقاط": "Puan ekle", "تسجيل جديد": "Yeni kayıt", "تسجيل دفعة": "Ödeme kaydı", "تسجيل إجازة": "İzin kaydı", "حصة جديدة": "Yeni ders", "حصة": "Ders", "حصص اليوم": "Bugünün dersleri", "حضور اليوم": "Bugünkü devam", "الطلاب النشطون": "Aktif öğrenciler", "تحميل (Excel)": "İndir (Excel)", "طباعة": "Yazdır", "نسخ النص": "Metni kopyala", "إرسال واتساب": "WhatsApp ile gönder", "حفظ (HTML)": "Kaydet (HTML)", "الاسم": "Ad", "الاسم الكامل": "Ad soyad", "التاريخ": "Tarih", "ملاحظات": "Notlar", "ملاحظة": "Not", "الهاتف": "Telefon", "الجوال": "Cep telefonu", "هاتف ولي الأمر": "Veli telefonu", "هاتف الطالب": "Öğrenci telefonu", "ولي الأمر": "Veli", "ولي أمر": "Veli", "المرحلة": "Aşama", "المستوى": "Seviye", "الفترة": "Dönem", "الحالة": "Durum", "الجنس": "Cinsiyet", "ذكر": "Erkek", "أنثى": "Kadın", "العنوان": "Adres", "المدينة": "Şehir", "القسم": "Bölüm", "السنة": "Yıl", "السنة الدراسية": "Eğitim yılı", "نوع الدراسة": "Eğitim türü", "الرقم": "No", "الرقم الذاتي": "Kişisel no", "الرقم الوطني": "Ulusal no", "تاريخ الميلاد": "Doğum tarihi", "السبب": "Sebep", "النوع": "Tür", "كل الأنواع": "Tüm türler", "المبلغ": "Tutar", "المدفوع": "Ödenen", "المتبقي": "Kalan", "المجموع": "Toplam", "الطريقة": "Yöntem", "نقداً": "Nakit", "المستلم": "Teslim alan", "رقم السند": "Makbuz no", "الحساب المالي": "Mali hesap", "النقاط": "Puanlar", "العلامة": "Not", "التقدير": "Değerlendirme", "تسميع": "Okuma", "تلاوة": "Tilavet", "حفظ جديد": "Yeni ezber", "مراجعة": "Tekrar", "من": "Başlangıç", "من صفحة": "Sayfadan", "إلى صفحة": "Sayfaya", "الرشيدي": "Reşidî", "القرآن الكريم": "Kur’an-ı Kerîm", "آخر التسميعات": "Son okumalar", "حذف التسميع": "Okumayı sil", "إضافات المعلم": "Öğretmen eklemeleri", "نشط": "Aktif", "منسحب": "Ayrıldı", "موقوف": "Askıda", "مقبول": "Kabul", "قيد القبول": "Kabul sürecinde", "مرفوض": "Reddedildi", "منقول": "Nakledildi", "ملغاة": "İptal edildi", "مجدولة": "Planlandı", "تمت": "Tamamlandı", "جارية": "Devam ediyor", "منتهٍ": "Sona erdi", "مسدّد": "Ödendi", "حاضر": "Mevcut", "متأخر": "Geç", "غائب": "Yok", "غياب": "Gelmedi", "صباحي": "Sabah", "مسائي": "Akşam", "ممتاز": "Mükemmel", "جيد جداً": "Çok iyi", "جيد": "İyi", "مدير عام": "Genel müdür", "مدير إدارة": "Birim müdürü", "مدير منطقة": "Bölge müdürü", "مدير مركز": "Merkez müdürü", "مشرف منطقة": "Bölge denetmeni", "مشرف مركز": "Merkez denetmeni", "كل المراحل": "Tüm aşamalar", "كل الفترات": "Tüm dönemler", "كل الفترة": "Tüm dönem", "كل المعلمين": "Tüm öğretmenler", "كل الأقسام": "Tüm bölümler", "هذا الشهر": "Bu ay", "بدون مركز": "Merkezsiz", "غير محدد": "Belirtilmemiş", "لم يُعيَّن": "Atanmadı", "لا نتائج": "Sonuç yok", "جارٍ التحميل": "Yükleniyor", "بيانات تجريبية": "Deneme verileri", "تم التحديث": "Güncellendi", "تم تنزيل الملف": "Dosya indirildi", "حُذفت": "Silindi", "حُذف": "Silindi", "الاسم مفقود": "Ad eksik", "تقرير الطالب": "Öğrenci raporu", "تقرير": "Rapor", "فترة التقرير": "Rapor dönemi", "آخر 30 يوماً": "Son 30 gün", "نص الرسالة للأهل": "Veliye mesaj metni", "إجمالي النقاط": "Toplam puan", "تفصيل النقاط": "Puan ayrıntısı", "جزاكم الله خيراً على متابعتكم": "Takibiniz için Allah razı olsun", "الطالب غير موجود.": "Öğrenci bulunamadı.", "إتمام جزء من القرآن": "Kur’an cüzünün tamamlanması", "اجتياز اختبار الرشيدي": "Reşidî sınavının geçilmesi", "اجتياز اختبار جزء": "Cüz sınavının geçilmesi", "إتمام مرحلة تعليمية": "Eğitim aşamasının tamamlanması", "تفوق وتميّز": "Başarı ve üstünlük", "شكر وتقدير": "Teşekkür ve takdir", "إتمام الكتاب الرشيدي": "Reşidî kitabının tamamlanması", "اختبار قصير": "Kısa sınav", "نصف الفصل": "Dönem ortası", "نهائي": "Final", "الابتدائية": "İlkokul", "الأهداف": "Hedefler", "اسم الكتاب": "Kitap adı", "دمشق": "Şam", "بحث شامل: طالب، معلم، كتاب، حصة، شهادة": "Genel arama: öğrenci, öğretmen, kitap, ders, sertifika", "بحث شامل": "Genel arama", "التنقل الرئيسي": "Ana gezinme", "شعار مؤسسة هدائي بركة": "Hidayi Bereket Vakfı logosu", "الثاني": "İkinci", "الثالث": "Üçüncü", "الرابع": "Dördüncü", "الخامس": "Beşinci", "السادس": "Altıncı", "السابع": "Yedinci", "الثامن": "Sekizinci", "التاسع": "Dokuzuncu"};
+var TR={"رجوع":"Geri","⚠ مشكلة":"⚠ Sorun","تواصل مع الدعم":"Destekle iletişim","خيارات الشريط":"Çubuk seçenekleri","الدعم الفني":"Teknik destek","إرسال تذكرة":"Destek talebi gönder","واتساب الدعم":"Destek WhatsApp","تذاكر الدعم":"Destek talepleri","تدريس حلقة (يعمل كمعلم)":"Halka dersi (öğretmen olarak)","ذكور":"Erkekler","إناث":"Kadınlar","ذكور / إناث":"Erkek / Kadın","ذ":"E","المنطقة: ذكور أم إناث؟":"Bölge: erkek mi kadın mı?","طلبات التعديل":"Düzenleme talepleri","طلب تعديل":"Düzenleme talebi","الحصة مغلقة":"Ders kapalı","موافقة":"Onayla","قيد المراجعة":"İncelemede","الإغلاق التلقائي للحصص":"Derslerin otomatik kapanması","تم الحفظ بنجاح":"Başarıyla kaydedildi","لم يتم الحفظ":"Kaydedilemedi","فشل الحفظ":"Kayıt başarısız","توجد بيانات غير محفوظة. هل تريد الإغلاق دون حفظ؟":"Kaydedilmemiş veriler var. Kaydetmeden kapatılsın mı?","حفظ الحصة":"Dersi kaydet","حلقات أنوار الهداية": "Envarü’l-Hüdâ Halkaları", "مؤسسة هدائي بركة": "Hidayi Bereket Vakfı", "لوحة التحكم": "Kontrol Paneli", "لوحة": "Panel", "الحصص": "Dersler", "الحلقة والتعليم": "Halka ve Eğitim", "الطلاب": "Öğrenciler", "طلاب": "Öğrenci", "الطالب": "Öğrenci", "طالب": "Öğrenci", "طالب جديد": "Yeni öğrenci", "المعلمون": "Öğretmenler", "المعلم": "Öğretmen", "معلم": "Öğretmen", "المشرفون": "Denetmenler", "الرسوم": "Ücretler", "رسوم": "Ücret", "التقارير": "Raporlar", "الحضور": "Devam", "الحفظ": "Ezber", "الحفظ والتسميع": "Ezber ve Okuma", "الكتب": "Kitaplar", "الكتاب": "Kitap", "التسجيلات": "Kayıtlar", "المناطق": "Bölgeler", "المنطقة": "Bölge", "الدفعات": "Ödemeler", "الشهادات": "Sertifikalar", "النظام": "Sistem", "الإعدادات": "Ayarlar", "الإدارات": "Yönetimler", "الإدارة": "Yönetim", "المراكز": "Merkezler", "المركز": "Merkez", "المراكز والحلقات": "Merkezler ve Halkalar", "الحلقات": "Halkalar", "الحلقة": "Halka", "الرسائل": "Mesajlar", "الحسابات": "Hesaplar", "المالية": "Mali", "المزيد": "Daha fazla", "بوابتي": "Portalım", "الإشعارات": "Bildirimler", "الاختبارات": "Sınavlar", "الدروس": "Dersler", "الدرس": "Ders", "حذف": "Sil", "تعديل": "Düzenle", "حفظ": "Kaydet", "إلغاء": "İptal", "إغلاق": "Kapat", "بحث": "Ara", "خروج": "Çıkış", "إعادة": "Yeniden", "إضافة نقاط": "Puan ekle", "تسجيل جديد": "Yeni kayıt", "تسجيل دفعة": "Ödeme kaydı", "تسجيل إجازة": "İzin kaydı", "حصة جديدة": "Yeni ders", "حصة": "Ders", "حصص اليوم": "Bugünün dersleri", "حضور اليوم": "Bugünkü devam", "الطلاب النشطون": "Aktif öğrenciler", "تحميل (Excel)": "İndir (Excel)", "طباعة": "Yazdır", "نسخ النص": "Metni kopyala", "إرسال واتساب": "WhatsApp ile gönder", "حفظ (HTML)": "Kaydet (HTML)", "الاسم": "Ad", "الاسم الكامل": "Ad soyad", "التاريخ": "Tarih", "ملاحظات": "Notlar", "ملاحظة": "Not", "الهاتف": "Telefon", "الجوال": "Cep telefonu", "هاتف ولي الأمر": "Veli telefonu", "هاتف الطالب": "Öğrenci telefonu", "ولي الأمر": "Veli", "ولي أمر": "Veli", "المرحلة": "Aşama", "المستوى": "Seviye", "الفترة": "Dönem", "الحالة": "Durum", "الجنس": "Cinsiyet", "ذكر": "Erkek", "أنثى": "Kadın", "العنوان": "Adres", "المدينة": "Şehir", "القسم": "Bölüm", "السنة": "Yıl", "السنة الدراسية": "Eğitim yılı", "نوع الدراسة": "Eğitim türü", "الرقم": "No", "الرقم الذاتي": "Kişisel no", "الرقم الوطني": "Ulusal no", "تاريخ الميلاد": "Doğum tarihi", "السبب": "Sebep", "النوع": "Tür", "كل الأنواع": "Tüm türler", "المبلغ": "Tutar", "المدفوع": "Ödenen", "المتبقي": "Kalan", "المجموع": "Toplam", "الطريقة": "Yöntem", "نقداً": "Nakit", "المستلم": "Teslim alan", "رقم السند": "Makbuz no", "الحساب المالي": "Mali hesap", "النقاط": "Puanlar", "العلامة": "Not", "التقدير": "Değerlendirme", "تسميع": "Okuma", "تلاوة": "Tilavet", "حفظ جديد": "Yeni ezber", "مراجعة": "Tekrar", "من": "Başlangıç", "من صفحة": "Sayfadan", "إلى صفحة": "Sayfaya", "الرشيدي": "Reşidî", "القرآن الكريم": "Kur’an-ı Kerîm", "آخر التسميعات": "Son okumalar", "حذف التسميع": "Okumayı sil", "إضافات المعلم": "Öğretmen eklemeleri", "نشط": "Aktif", "منسحب": "Ayrıldı", "موقوف": "Askıda", "مقبول": "Kabul", "قيد القبول": "Kabul sürecinde", "مرفوض": "Reddedildi", "منقول": "Nakledildi", "ملغاة": "İptal edildi", "مجدولة": "Planlandı", "تمت": "Tamamlandı", "جارية": "Devam ediyor", "منتهٍ": "Sona erdi", "مسدّد": "Ödendi", "حاضر": "Mevcut", "متأخر": "Geç", "غائب": "Yok", "غياب": "Gelmedi", "صباحي": "Sabah", "مسائي": "Akşam", "ممتاز": "Mükemmel", "جيد جداً": "Çok iyi", "جيد": "İyi", "مدير عام": "Genel müdür", "مدير إدارة": "Birim müdürü", "مدير منطقة": "Bölge müdürü", "مدير مركز": "Merkez müdürü", "مشرف منطقة": "Bölge denetmeni", "مشرف مركز": "Merkez denetmeni", "كل المراحل": "Tüm aşamalar", "كل الفترات": "Tüm dönemler", "كل الفترة": "Tüm dönem", "كل المعلمين": "Tüm öğretmenler", "كل الأقسام": "Tüm bölümler", "هذا الشهر": "Bu ay", "بدون مركز": "Merkezsiz", "غير محدد": "Belirtilmemiş", "لم يُعيَّن": "Atanmadı", "لا نتائج": "Sonuç yok", "جارٍ التحميل": "Yükleniyor", "بيانات تجريبية": "Deneme verileri", "تم التحديث": "Güncellendi", "تم تنزيل الملف": "Dosya indirildi", "حُذفت": "Silindi", "حُذف": "Silindi", "الاسم مفقود": "Ad eksik", "تقرير الطالب": "Öğrenci raporu", "تقرير": "Rapor", "فترة التقرير": "Rapor dönemi", "آخر 30 يوماً": "Son 30 gün", "نص الرسالة للأهل": "Veliye mesaj metni", "إجمالي النقاط": "Toplam puan", "تفصيل النقاط": "Puan ayrıntısı", "جزاكم الله خيراً على متابعتكم": "Takibiniz için Allah razı olsun", "الطالب غير موجود.": "Öğrenci bulunamadı.", "إتمام جزء من القرآن": "Kur’an cüzünün tamamlanması", "اجتياز اختبار الرشيدي": "Reşidî sınavının geçilmesi", "اجتياز اختبار جزء": "Cüz sınavının geçilmesi", "إتمام مرحلة تعليمية": "Eğitim aşamasının tamamlanması", "تفوق وتميّز": "Başarı ve üstünlük", "شكر وتقدير": "Teşekkür ve takdir", "إتمام الكتاب الرشيدي": "Reşidî kitabının tamamlanması", "اختبار قصير": "Kısa sınav", "نصف الفصل": "Dönem ortası", "نهائي": "Final", "الابتدائية": "İlkokul", "الأهداف": "Hedefler", "اسم الكتاب": "Kitap adı", "دمشق": "Şam", "بحث شامل: طالب، معلم، كتاب، حصة، شهادة": "Genel arama: öğrenci, öğretmen, kitap, ders, sertifika", "بحث شامل": "Genel arama", "التنقل الرئيسي": "Ana gezinme", "شعار مؤسسة هدائي بركة": "Hidayi Bereket Vakfı logosu", "الثاني": "İkinci", "الثالث": "Üçüncü", "الرابع": "Dördüncü", "الخامس": "Beşinci", "السادس": "Altıncı", "السابع": "Yedinci", "الثامن": "Sekizinci", "التاسع": "Dokuzuncu"};
 var keys=Object.keys(TR).sort(function(a,b){return b.length-a.length;});
 var AR='\u0600-\u06FF', re=keys.filter(function(k){return k.length>3;}).map(function(k){return k.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}).join('|');
 var rx=new RegExp('(?<![\u0600-\u06FF])('+re+')(?![\u0600-\u06FF])','g');
