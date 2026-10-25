@@ -2513,14 +2513,28 @@ function showMustChange(){
     if(p1!==p2){er.textContent='كلمتا المرور غير متطابقتين.';return;}
     er.textContent='';
     var ok=$('#c_ok');if(ok)ok.disabled=true;
+    /* [FIX] لا نتابع إلا إذا نجح تغيير كلمة المرور وتأكّد حفظ must_change=false فعلاً في قاعدة البيانات */
+    function fail(msg){ok.disabled=false;er.textContent=msg;}
     SB.client.auth.updateUser({password:p1}).then(function(r1){
-      if(r1.error){ok.disabled=false;er.textContent=sbMsg(r1.error);return;}
-      return SB.client.from('profiles').update({name:name,must_change:false}).eq('id',SB.user.id);
+      if(r1.error){fail(sbMsg(r1.error));return;}
+      return SB.client.rpc('complete_first_login',{p_name:name}).then(function(q){
+        if(q.error&&(q.error.code==='42883'||q.error.code==='PGRST202')){   /* الدالة غير منشورة بعد: المسار القديم مع التحقق من عدد الصفوف */
+          return SB.client.from('profiles').update({name:name,must_change:false}).eq('id',SB.user.id).select('id')
+            .then(function(u){
+              if(u.error)return {err:u.error};
+              if(!u.data||u.data.length!==1)return {err:{message:'no-row-updated'}};
+              return {ok:true};
+            });
+        }
+        if(q.error)return {err:q.error};
+        return q.data===true?{ok:true}:{err:{message:'not-updated'}};
+      });
     }).then(function(r2){
-      if(r2&&r2.error){ok.disabled=false;er.textContent='تعذّر حفظ الاسم.';return;}
+      if(r2===undefined)return;                                   /* توقّفنا أعلاه برسالة خطأ */
+      if(r2.err){fail('تم تغيير كلمة المرور لكن تعذّر حفظ حسابك ('+String(r2.err.message||r2.err.code||'')+'). لا تُغلق الصفحة؛ أعد الضغط أو راسل الدعم.');return;}
       if(S.profile){S.profile.name=name;S.profile.must_change=false;}
       startApp(S.profile.role);
-    },function(e){ok.disabled=false;er.textContent=sbMsg(e);});
+    },function(e){fail(sbMsg(e));});
   });
 }
 /* ============================================================
