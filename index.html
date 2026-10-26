@@ -30,7 +30,11 @@ window.__hbErrs=[];
 </script>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="هدائي بركة">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>حلقات أنوار الهداية — مؤسسة هدائي بركة</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -6353,7 +6357,7 @@ function vSessionForm(){
     '</div>'+
     '<label class="chk" style="margin-top:10px">'+
       '<input type="checkbox" data-sess="creditToStudents"'+(st.creditToStudents?' checked':'')+'> '+
-      'احتساب هذه الصفحات لكل طالب حاضر في خريطته'+
+      'تسجيل هذه الصفحات في خانة «التلقين» لكل طالب حاضر (دون نقاط ودون خريطة الحفظ). تسميع كل طالب يُسجَّل له وحده من زر «تسميع» بجانب اسمه'+
     '</label></div>';
   }
   if(ed_hasBase(st,'manhaj') || ed_hasBase(st,'musahib')){
@@ -6401,7 +6405,7 @@ function vSessionForm(){
       '<span class="pill warn">متأخر '+counts.l+'</span>'+
       '<span class="pill bad">غائب '+counts.a+'</span>'+
       '<span class="pill">غير محدد '+counts.u+'</span>'+
-      W('<button type="button" class="btn sm pri" data-act="sessAllPresent">'+ico('att')+'تحضير الجميع</button>')+
+      W('<button type="button" class="btn sm pri" data-act="sessAllPresent">'+ico('att')+'تسجيل الكل حضور</button>')+
     '</div>';
   h += students.map(function(e){
     var sid = e.studentId;
@@ -6612,7 +6616,7 @@ ACT.sessAllPresent = function(){
   if(!students.length){toast('لا يوجد طلاب.');return;}
   students.forEach(function(e){st.attendance[e.studentId]='p';});
   render();
-  toast('حُضّر الجميع — عدّل الحالات الفردية إن لزم');
+  toast('سُجّل الجميع حاضرين — عدّل الحالات الفردية إن لزم');
 };
 /* ============================================================
    ACT — التسميع
@@ -6867,7 +6871,7 @@ function vAtt(){
   });
   var h = vh('الحضور',
     'حاضر / متأخر / غائب · '+esc(date),
-    W('<button type="button" class="btn pri" data-act="allPresent">'+ico('att')+'تحضير الجميع</button>'));
+    W('<button type="button" class="btn pri" data-act="allPresent">'+ico('att')+'تسجيل الكل حضور</button>'));
   h += '<div class="filters">'+
     '<input id="adate" type="date" data-bind="adate" value="'+esc(date)+'" aria-label="التاريخ">'+
     '<select id="ast" data-bind="ast">'+selOpts(stageList(), ast, 'كل المراحل')+'</select>'+
@@ -6931,7 +6935,7 @@ ACT.allPresent = function(){
   var m = {};
   rows.forEach(function(e){m[e.studentId] = 'p';});
   Data.mergeMarks('attendance', date, m)
-    .then(function(){toast('حُضّر '+rows.length+' طالب');},function(e){toast(errMsg(e));});
+    .then(function(){toast('سُجّل '+rows.length+' طالب حاضراً');},function(e){toast(errMsg(e));});
 };
 /* ============================================================
    vPoints — قائمة النقاط
@@ -13706,6 +13710,63 @@ function ed_nomCert(exam,nom){
   document.head.appendChild(st);
 })();
 
+
+/* ============================================================
+   التلقين: يُسجَّل في خانة «التلقين» عند الطالب فقط — دون نقاط ودون خريطة الحفظ
+   (تسميع كل طالب يبقى منفصلاً من زر «تسميع» بجانب اسمه)
+   ============================================================ */
+function ed_isTalq(x){ return x&&x.src==='talqeen'; }
+var __ed_derive5=derive;
+derive=function(){
+  var r=__ed_derive5.apply(this,arguments);
+  try{
+    var pg=D.pg;
+    Object.keys(pg).forEach(function(sid){
+      var p=pg[sid];
+      if(!p||!p.rec||!p.rec.some(ed_isTalq)) return;
+      var q=Object.assign({},p);
+      q.rec=p.rec.filter(function(x){return !ed_isTalq(x);});
+      q.talq=(p.talq||[]).concat(p.rec.filter(ed_isTalq));
+      pg[sid]=q;
+    });
+  }catch(e){ console.error('ed talq split',e); }
+  return r;
+};
+/* عند أي حفظ لتقدم الطالب نعيد التلقين إلى مصفوفة rec كما يخزّنها الخادم */
+var __ed_saveProg=saveProg;
+saveProg=function(sid,mut){
+  return __ed_saveProg(sid,function(p){
+    if(p.talq){ p.rec=(p.rec||[]).concat(p.talq); delete p.talq; }
+    mut(p);
+  });
+};
+function ed_talqCard(sid){
+  var t=(D.pg[sid]&&D.pg[sid].talq)||[],groups={},total=0;
+  t.forEach(function(e){
+    var k=(e.sessionId||'')+'|'+e.d,g=groups[k]||(groups[k]={d:e.d,ses:e.sessionId,pages:[]});
+    g.pages.push(absPage(e.juz,e.page)); total++;
+  });
+  var list=Object.keys(groups).map(function(k){return groups[k];}).sort(function(a,b){return a.d<b.d?1:a.d>b.d?-1:0;}).slice(0,10);
+  var h='<div class="card ed-card"><h2>التلقين</h2>';
+  if(!list.length) return h+'<p class="note">لا توجد صفحات تلقين مسجّلة.</p></div>';
+  h+='<p class="note">مجموع صفحات التلقين: <b>'+total+'</b> · لا تُحتسب نقاطاً ولا تدخل خريطة الحفظ.</p><div class="list">'+list.map(function(g){
+    var mn=Math.min.apply(null,g.pages),mx=Math.max.apply(null,g.pages);
+    var ses=g.ses?(S.sessions||[]).filter(function(x){return x.id===g.ses;})[0]:null;
+    return '<div class="li"><div><b>'+(mn===mx?'صفحة '+mn:'صفحات '+mn+'–'+mx)+'</b><small>'+esc(g.d)+(ses&&ses.title?' · '+esc(ses.title):'')+'</small></div><span class="pill">'+g.pages.length+' صفحة</span></div>';
+  }).join('')+'</div></div>';
+  return h;
+}
+var __ed_se2=ed_studentExtras;
+ed_studentExtras=function(sid){
+  var h=__ed_se2(sid),k='<div class="card ed-card"><h2>التسجيلات الصوتية</h2>',ix=h.indexOf(k),c=ed_talqCard(sid);
+  return ix>=0?h.slice(0,ix)+c+h.slice(ix):h+c;
+};
+var __ed_vp3=VIEWS.portal;
+VIEWS.portal=function(){
+  var h=__ed_vp3.apply(this,arguments),sid=ed_sid();
+  return sid?h+ed_talqCard(sid):h;
+};
+
 try{ boot(); }catch(e){ console.error('boot error:', e); try{ localBoot(); }catch(_){} }
 /* ============================================================
    نهاية التطبيق
@@ -13757,7 +13818,7 @@ window.__i18n={tr:tr,setLang:setLang};
 </script>
 <script>
 (function(){
-  if('serviceWorker' in navigator&&location.protocol==='https:'){
+  if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){
     window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){});});
   }
   var dp=null,btn=function(){return document.getElementById('topInstall');};
