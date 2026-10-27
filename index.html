@@ -29,8 +29,8 @@ window.__hbErrs=[];
 })();
 </script>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icons/icon-192.png">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="هدائي بركة">
@@ -536,6 +536,11 @@ body.is-teacher [data-act^="export"]{display:none!important}
 .vmap{display:grid;gap:8px}
 .vrow2{display:grid;grid-template-columns:1fr auto 84px;gap:8px;align-items:center}
 .vrow{display:grid;grid-template-columns:1fr 84px 84px;gap:8px;align-items:center}
+</style>
+<style id="anwar-offline-styles">
+.off-badge{position:fixed;inset-inline-start:10px;bottom:84px;z-index:45;border:0;border-radius:999px;padding:7px 12px;font:inherit;font-size:12px;font-weight:700;color:#fff;box-shadow:0 2px 10px rgba(0,0,0,.25);cursor:pointer}
+.off-badge.off{background:#8a5a00}.off-badge.wait{background:#12958F}.off-badge.bad{background:#b3261e}
+@media (min-width:861px){.off-badge{bottom:16px}}
 </style>
 </head>
 <!-- ✅ نهاية الجزء 1 من 20 (بعد التحقق) -->
@@ -2603,7 +2608,7 @@ function gate(session){
     authScreen('تعذّر التحقق من الحساب',
       '<p>تحقق من الاتصال ثم أعد المحاولة.</p>'+
       '<p dir="ltr" class="note">'+esc(String((e&&e.message)||e))+'</p>'+
-      '<div class="mact"><button type="button" class="btn pri" onclick="location.reload()">إعادة المحاولة</button></div>'
+      '<div class="mact"><button type="button" class="btn pri" onclick="location.reload()">إعادة المحاولة</button> <button type="button" class="btn" onclick="window.__edOffline()">متابعة دون اتصال</button></div>'
     );
   });
 }
@@ -6217,7 +6222,7 @@ function sessionEnrolls(st){
     return e.year===Y && e.status==='نشط' &&
       (!st.stage || e.stage===st.stage) && (!st.section || e.section===st.section) && (!st.shift || e.shift===st.shift) &&
       (!st.teacherId || e.teacherId===st.teacherId);
-  }).sort(byName);
+  }).sort(byName).filter(function(e,i,a){return a.findIndex(function(x){return x.studentId===e.studentId;})===i;});
 }
 /* ============================================================
    fieldInline / fieldInlineSelect — مساعدات داخل النموذج
@@ -13765,6 +13770,352 @@ var __ed_vp3=VIEWS.portal;
 VIEWS.portal=function(){
   var h=__ed_vp3.apply(this,arguments),sid=ed_sid();
   return sid?h+ed_talqCard(sid):h;
+};
+
+
+/* ============================================================
+   قائمة الحصة: منع تكرار الطالب، و«تسجيل الكل حضور» يستثني من عُلِّم غائباً
+   ============================================================ */
+var __ed_derive6=derive;
+derive=function(){
+  try{
+    var seen={};
+    S.enrollments=S.enrollments.filter(function(e){
+      var k=[e.studentId,e.year,e.status,e.teacherId,e.stage,e.section,e.shift,e.halaqaId].join('|');
+      if(seen[k]) return false; seen[k]=1; return true;
+    });
+  }catch(e){ console.error('ed dedupe enrollments',e); }
+  return __ed_derive6.apply(this,arguments);
+};
+var __ed_sessMark=ACT.sessMark;
+ACT.sessMark=function(d){
+  var st=S.ui.session;
+  if(st){
+    st.absentSet=st.absentSet||{};
+    var cur=st.attendance[d.sid];
+    if(d.st==='a'&&cur!=='a') st.absentSet[d.sid]=1; else delete st.absentSet[d.sid];
+  }
+  return __ed_sessMark.apply(this,arguments);
+};
+ACT.sessAllPresent=function(){
+  var st=S.ui.session; if(!st) return;
+  var rows=sessionEnrolls(st);
+  if(!rows.length){ toast('لا يوجد طلاب.'); return; }
+  st.absentSet=st.absentSet||{};
+  var n=0,skip=0;
+  rows.forEach(function(e){
+    if(st.absentSet[e.studentId]&&st.attendance[e.studentId]==='a'){ skip++; return; }
+    st.attendance[e.studentId]='p'; n++;
+  });
+  render();
+  toast('سُجّل '+n+' حاضراً'+(skip?' واستُثني '+skip+' غائب':'')+' — عدّل الحالات الفردية إن لزم');
+};
+/* تنظيف التسجيلات المكررة (للمشرف العام فما فوق) */
+function ed_dupEnrolls(){
+  var seen={},dups=[];
+  (RAW.enrollments||[]).slice().sort(function(a,b){return String(a.id)<String(b.id)?-1:1;}).forEach(function(e){
+    var k=[e.studentId,e.year,e.status,e.teacherId,e.stage,e.section,e.shift,e.halaqaId].join('|');
+    if(seen[k]) dups.push(e.id); else seen[k]=1;
+  });
+  return dups;
+}
+var __ed_vs5=VIEWS.set;
+VIEWS.set=function(){
+  var h=__ed_vs5.apply(this,arguments);
+  if(myLevel()>=5&&myRole()!=='teacher'){
+    var n=ed_dupEnrolls().length;
+    h+='<div class="card"><h2>تنظيف التسجيلات المكررة</h2><p class="note">يظهر الطالب مرتين أو أكثر في قائمة الحصة إذا تكرر تسجيله بالبيانات نفسها. هذا يحذف النسخ الزائدة ويُبقي واحدة.</p>'+
+      '<p>عدد النسخ المكررة الآن: <b>'+n+'</b></p>'+
+      '<div class="mact"><button type="button" class="btn pri" data-act="edDupClean"'+(n?'':' disabled')+'>حذف النسخ المكررة</button></div></div>';
+  }
+  return h;
+};
+ACT.edDupClean=function(){
+  if(myLevel()<5) return;
+  var ids=ed_dupEnrolls(); if(!ids.length){ toast('لا توجد نسخ مكررة.'); return; }
+  confirmBox('حذف التسجيلات المكررة','سيُحذف '+ids.length+' تسجيلاً مكرراً ويبقى تسجيل واحد لكل طالب.','حذف',function(){
+    Promise.all(ids.map(function(id){return Data.del('enrollments',id);})).then(function(){ toast('تم حذف '+ids.length+' تسجيلاً مكرراً'); render(); },function(e){ toast(errMsg(e)); });
+  });
+};
+
+
+/* ============================================================
+   العمل دون اتصال: الحصص وإضافة الطلاب تُحفظ على الجهاز وتُزامَن عند عودة الاتصال
+   ============================================================ */
+var ED_QUEUE_PUT={students:1,enrollments:1};
+function ed_netErr(e){
+  if(!e) return false;
+  var m=String(e.message||e);
+  return e.code==='offline'||/failed to fetch|networkerror|network request|load failed|offline|timeout|econn|fetch/i.test(m);
+}
+/* --- IndexedDB --- */
+var ed_dbp=null;
+function ed_idb(){
+  if(ed_dbp) return ed_dbp;
+  ed_dbp=new Promise(function(res,rej){
+    if(!window.indexedDB){ rej(new Error('no indexedDB')); return; }
+    var r=indexedDB.open('anwar-offline',1);
+    r.onupgradeneeded=function(){
+      var d=r.result;
+      if(!d.objectStoreNames.contains('snap')) d.createObjectStore('snap');
+      if(!d.objectStoreNames.contains('queue')) d.createObjectStore('queue',{keyPath:'seq',autoIncrement:true});
+    };
+    r.onsuccess=function(){ res(r.result); };
+    r.onerror=function(){ rej(r.error); };
+  });
+  return ed_dbp;
+}
+function ed_tx(store,mode,fn){
+  return ed_idb().then(function(db){
+    return new Promise(function(res,rej){
+      var t=db.transaction(store,mode),o=fn(t.objectStore(store));
+      t.oncomplete=function(){ res(o&&('result' in o)?o.result:undefined); };
+      t.onerror=t.onabort=function(){ rej(t.error); };
+    });
+  });
+}
+function ed_qAll(){ return ed_tx('queue','readonly',function(s){return s.getAll();}).then(function(a){return (a||[]).sort(function(x,y){return x.seq-y.seq;});}); }
+function ed_qAdd(job){ job.ts=Date.now(); return ed_tx('queue','readwrite',function(s){return s.add(job);}).then(function(){ ed_badge(); }); }
+function ed_qDel(seq){ return ed_tx('queue','readwrite',function(s){return s.delete(seq);}); }
+function ed_qSave(job){ return ed_tx('queue','readwrite',function(s){return s.put(job);}); }
+/* --- لقطة البيانات للتشغيل دون اتصال --- */
+function ed_snapSave(){
+  try{
+    if(S.mode!=='shared'||!S.profile||!SB.user) return Promise.resolve();
+    if(!COLS.concat(['settings']).every(function(c){return S.loaded[c];})) return Promise.resolve();
+    var raw={}; COLS.forEach(function(c){ raw[c]=RAW[c]||[]; });
+    var snap={v:1,ts:Date.now(),user:{id:SB.user.id,email:SB.user.email},profile:S.profile,role:S.role,raw:raw,settings:S.settings};
+    return ed_tx('snap','readwrite',function(s){return s.put(snap,'main');}).catch(function(){});
+  }catch(e){ return Promise.resolve(); }
+}
+var ed_snapT=0;
+function ed_snapSoon(){ if(ed_snapT) return; ed_snapT=setTimeout(function(){ ed_snapT=0; ed_snapSave(); },12000); }
+function ed_snapLoad(){ return ed_tx('snap','readonly',function(s){return s.get('main');}); }
+var __ed_refresh=refresh;
+refresh=function(){ var r=__ed_refresh.apply(this,arguments); try{ ed_snapSoon(); }catch(e){} return r; };
+document.addEventListener('visibilitychange',function(){ if(document.hidden){ ed_snapSave(); } });
+/* --- التطبيق المحلي للعملية المؤجلة (عرض فوري) --- */
+function ed_applyLocal(j){
+  var db=Data.db; if(!db) return;
+  try{
+    if(j.type==='put'){ db.cacheSet(j.col,j.id,j.data); db.touch([j.col]); }
+    else if(j.type==='marks'){ db.mergeLocal(j.col,j.id,j.marks); }
+    else if(j.type==='session'){
+      var a=j.args; // [sessionId,sessionDoc,date,marks,prog,hw]
+      db.cacheSet('sessions',a[0],a[1]);
+      db.mergeLocal('attendance',a[2],a[3]||{});
+      Object.keys(a[4]||{}).forEach(function(sid){
+        var inc=a[4][sid],cur=(D.pg[sid]&&D.pg[sid])||{rec:[],rash:[]};
+        var base=RAW.prog&&RAW.prog.filter(function(x){return x.id===sid;})[0]||{rec:[],rash:[]};
+        var rec=(base.rec||[]).filter(function(x){return x.sessionId!==a[0];}).concat(inc.rec||[]);
+        var rash=(base.rash||[]).filter(function(x){return x.sessionId!==a[0];}).concat(inc.rash||[]);
+        var o=Object.assign({},base); delete o.id; o.rec=rec; o.rash=rash; db.cacheSet('prog',sid,o);
+      });
+      Object.keys(a[5]||{}).forEach(function(sid){ db.cacheSet('homework',sid,a[5][sid]); });
+      db.touch(['sessions','attendance','prog','homework']);
+    }
+  }catch(e){ console.error('ed applyLocal',e); }
+}
+/* --- التفاف على عمليات الكتابة --- */
+function ed_isNew(col,id){ return !(RAW[col]||[]).some(function(x){return x.id===id;}); }
+var __ed_put3=Data.put;
+Data.put=function(col,id,data){
+  if(col==='enrollments'&&data&&!data.createdBy&&SB.user){ data=Object.assign({},data,{createdBy:SB.user.id,createdByRole:myRole()}); }
+  var args=[col,id,data];
+  function queue(){
+    if(!ED_QUEUE_PUT[col]||!ed_isNew(col,id)){ var er=new Error('هذا الإجراء يحتاج اتصالاً بالإنترنت.'); er.code='sb'; return Promise.reject(er); }
+    var job={type:'put',col:col,id:id,data:data,label:(col==='students'?'إضافة طالب: '+(data.name||''):'تسجيل طالب في حلقة')};
+    return ed_qAdd(job).then(function(){ ed_applyLocal(job); });
+  }
+  if(S.mode==='shared'&&navigator.onLine===false) return queue();
+  return __ed_put3.apply(Data,args).catch(function(e){ if(S.mode==='shared'&&ed_netErr(e)) return queue(); throw e; });
+};
+var __ed_mm=Data.mergeMarks;
+Data.mergeMarks=function(col,id,marks){
+  function queue(){ var job={type:'marks',col:col,id:id,marks:marks,label:'حضور '+id}; return ed_qAdd(job).then(function(){ ed_applyLocal(job); }); }
+  if(S.mode==='shared'&&navigator.onLine===false) return queue();
+  return __ed_mm.apply(Data,arguments).catch(function(e){ if(S.mode==='shared'&&ed_netErr(e)) return queue(); throw e; });
+};
+var __ed_ssa=Data.saveSessionAtomic;
+Data.saveSessionAtomic=function(sessionId,sessionDoc,date,marks,prog,hw){
+  var args=[sessionId,sessionDoc,date,marks,prog,hw];
+  function queue(){
+    var job={type:'session',args:args,label:'حصة '+(sessionDoc&&sessionDoc.date||date)+(sessionDoc&&sessionDoc.title?' — '+sessionDoc.title:'')};
+    return ed_qAdd(job).then(function(){ ed_applyLocal(job); return {ok:true,queued:true}; });
+  }
+  if(S.mode==='shared'&&navigator.onLine===false){
+    var pre=null; try{ pre=ed_sessGuard(sessionId,sessionDoc); }catch(e){}
+    if(pre) return Promise.reject(pre);
+    return queue();
+  }
+  return __ed_ssa.apply(Data,arguments).catch(function(e){ if(S.mode==='shared'&&ed_netErr(e)) return queue(); throw e; });
+};
+function ed_sessGuard(){ return null; }
+var __ed_tca=tryCreateAuthAccount;
+tryCreateAuthAccount=function(no,name,role){
+  if(S.mode==='shared'&&(!SB.client||navigator.onLine===false)){
+    var st=S.students.filter(function(o){return String(o.self_no)===String(no);})[0];
+    return ed_qAdd({type:'acct',no:no,name:name,role:role,sid:st?st.id:'',label:'إنشاء حساب دخول: '+name}).then(function(){ toast('سيُنشأ حساب الدخول عند عودة الاتصال.'); return null; });
+  }
+  return __ed_tca.apply(this,arguments);
+};
+/* --- المزامنة --- */
+var ed_flushing=false;
+function ed_fixNumbers(job){
+  var d=job.data,list=RAW.students||[];
+  if(String(d.self_no||'')&&list.some(function(x){return x.id!==job.id&&String(x.self_no)===String(d.self_no);})){ d.self_no=String(nextSelfNo(1)); job.renum=true; }
+  if(String(d.no||'')&&list.some(function(x){return x.id!==job.id&&String(x.no)===String(d.no);})){ d.no=String(nextNo()); job.renum=true; }
+}
+function ed_runJob(j){
+  if(j.type==='put'){
+    if(j.col==='students') ed_fixNumbers(j);
+    return __ed_put3.call(Data,j.col,j.id,j.data);
+  }
+  if(j.type==='marks') return __ed_mm.call(Data,j.col,j.id,j.marks);
+  if(j.type==='session') return __ed_ssa.apply(Data,j.args).then(function(r){ if(r&&r.legacy) throw new Error('دالة حفظ الحصة غير متوفرة على الخادم.'); return r; });
+  if(j.type==='acct'){
+    var st=j.sid?(RAW.students||[]).filter(function(x){return x.id===j.sid;})[0]:null;
+    var no=st?st.self_no:j.no;
+    return SB.client.rpc('admin_create_user',{p_self_no:String(no),p_name:j.name||'',p_role:j.role||'student',p_initial_password:'000000'}).then(function(r){
+      if(r&&r.error){ if(ed_netErr(r.error)) throw new Error(r.error.message); toast('تعذّر إنشاء حساب الدخول للرقم '+no+': '+(r.error.message||'')); }
+    });
+  }
+  return Promise.resolve();
+}
+function ed_flush(){
+  if(ed_flushing||S.offline||!SB.client||navigator.onLine===false||S.mode!=='shared') return Promise.resolve();
+  ed_flushing=true;
+  var okN=0,renum=0;
+  return ed_qAll().then(function(jobs){
+    var p=Promise.resolve(),stop=false;
+    jobs.filter(function(j){return !j.failed;}).forEach(function(j){
+      p=p.then(function(){
+        if(stop) return;
+        return ed_runJob(j).then(function(){ okN++; if(j.renum) renum++; return ed_qDel(j.seq); },function(e){
+          if(ed_netErr(e)){ stop=true; return; }
+          j.failed=true; j.err=String((e&&e.message)||e); return ed_qSave(j);
+        });
+      });
+    });
+    return p;
+  }).then(function(){
+    ed_flushing=false; ed_badge();
+    if(okN){ toast('تمت مزامنة '+okN+' عملية مع الخادم'+(renum?' — غُيّر رقم '+renum+' طالب لتفادي التكرار':'')); document.dispatchEvent(new Event('visibilitychange')); }
+  },function(){ ed_flushing=false; });
+}
+window.addEventListener('online',function(){
+  if(S.offline){ ed_badge(); if(!(S.ui&&S.ui.session)&&!S.modals.length) setTimeout(function(){location.reload();},800); return; }
+  setTimeout(ed_flush,1500); ed_badge();
+});
+window.addEventListener('offline',function(){ ed_badge(); });
+setInterval(function(){ ed_flush(); },60000);
+function ed_afterLoad(){
+  var n=0,iv=setInterval(function(){
+    n++;
+    if(COLS.concat(['settings']).every(function(c){return S.loaded[c];})){ clearInterval(iv); ed_flush(); ed_snapSave(); }
+    else if(n>60) clearInterval(iv);
+  },500);
+}
+var __ed_startApp=startApp;
+startApp=function(role){ var r=__ed_startApp.apply(this,arguments); try{ ed_afterLoad(); ed_badge(); }catch(e){} return r; };
+/* --- شارة الحالة وقائمة الانتظار --- */
+function ed_badge(){
+  ed_qAll().then(function(jobs){
+    var pend=jobs.filter(function(j){return !j.failed;}).length,fail=jobs.length-pend;
+    var el=document.getElementById('offBadge');
+    var off=S.offline||navigator.onLine===false;
+    if(!off&&!pend&&!fail){ if(el) el.remove(); return; }
+    if(!el){ el=document.createElement('button'); el.type='button'; el.id='offBadge'; el.className='off-badge'; el.setAttribute('data-act','edQueue'); document.body.appendChild(el); }
+    el.className='off-badge'+(fail?' bad':off?' off':' wait');
+    el.textContent=fail?('⚠ تعذّرت مزامنة '+fail+(pend?' · بانتظار '+pend:'')):(off?('● دون اتصال'+(pend?' · بانتظار المزامنة '+pend:'')):('⏳ بانتظار المزامنة '+pend));
+  },function(){});
+}
+ACT.edQueue=function(){
+  ed_qAll().then(function(jobs){
+    var snapInfo=S.snapTs?('<p class="note">آخر تحديث للبيانات على هذا الجهاز: '+esc(new Date(S.snapTs).toLocaleString('ar'))+'</p>'):'';
+    M.push({title:'المزامنة',body:function(){
+      var h=snapInfo+(S.offline?'<p class="note">أنت تعمل دون اتصال. ستُرسل العمليات تلقائياً عند عودة الاتصال.</p>':'');
+      if(!jobs.length) return h+'<p class="note">لا توجد عمليات معلّقة.</p>';
+      return h+'<div class="list">'+jobs.map(function(j){
+        return '<div class="li" style="flex-wrap:wrap"><div><b>'+esc(j.label||j.type)+'</b><small>'+esc(new Date(j.ts).toLocaleString('ar'))+(j.failed?' — فشل: '+esc(j.err||''):' — بانتظار الإرسال')+'</small></div>'+
+          (j.failed?'<div class="btns"><button type="button" class="btn sm" data-act="edQRetry" data-seq="'+j.seq+'">إعادة</button><button type="button" class="btn sm" data-act="edQDrop" data-seq="'+j.seq+'">حذف</button></div>':'')+'</div>';
+      }).join('')+'</div>'+(S.offline&&navigator.onLine?'<div class="mact"><button type="button" class="btn pri" onclick="location.reload()">مزامنة الآن</button></div>':'');
+    }});
+  });
+};
+ACT.edQRetry=function(d){ ed_qAll().then(function(js){ var j=js.filter(function(x){return String(x.seq)===String(d.seq);})[0]; if(!j) return; delete j.failed; delete j.err; return ed_qSave(j).then(function(){ if(S.modals.length) M.pop(); ed_flush(); ed_badge(); }); }); };
+ACT.edQDrop=function(d){ confirmBox('حذف العملية','ستُحذف هذه العملية ولن تُرسل للخادم.','حذف',function(){ ed_qDel(Number(d.seq)).then(function(){ if(S.modals.length) M.pop(); ed_badge(); toast('حُذفت العملية'); }); }); };
+/* --- الإقلاع دون اتصال من اللقطة المحفوظة --- */
+function ed_hasAuthKey(){
+  try{
+    return [localStorage,sessionStorage].some(function(a){ return Object.keys(a).some(function(k){return /^sb-.*-auth-token$/.test(k);}); });
+  }catch(e){ return false; }
+}
+function ed_offAdapter(snap){
+  var cache={},subs={},loaded=false;
+  function notify(c){(subs[c]||[]).forEach(function(f){try{f();}catch(e){}});}
+  Object.keys(snap.raw).forEach(function(c){
+    cache[c]={}; (snap.raw[c]||[]).forEach(function(d){ var o=Object.assign({},d),id=o.id; delete o.id; cache[c][id]=o; });
+  });
+  cache.settings={main:snap.settings||{}};
+  function snapOf(c){ var o=cache[c]||{}; return {docs:Object.keys(o).map(function(id){return {id:id,data:function(){return o[id];}};})}; }
+  function offErr(){ var e=new Error('Failed to fetch'); e.code='offline'; return Promise.reject(e); }
+  return {
+    collection:function(c){ return {
+      doc:function(id){ return {set:offErr,update:offErr,delete:offErr}; },
+      onSnapshot:function(cb){ (subs[c]=subs[c]||[]).push(function(){cb(snapOf(c));}); if(loaded) cb(snapOf(c)); }
+    }; },
+    doc:function(path){ var p=path.split('/'); return {onSnapshot:function(cb){
+      function f(){ var o=(cache[p[0]]||{})[p[1]]; cb({exists:!!o,data:function(){return o;}}); }
+      (subs[p[0]]=subs[p[0]]||[]).push(f); if(loaded) f();
+    }}; },
+    cacheSet:function(c,id,d){ (cache[c]=cache[c]||{})[id]=d; },
+    touch:function(cs){ (cs||[]).forEach(notify); },
+    rpc:function(){ return Promise.resolve({error:{code:'offline',message:'offline'}}); },
+    mergeLocal:function(c,id,marks){
+      var cur=(cache[c]||{})[id]||{date:id};
+      (cache[c]=cache[c]||{})[id]=Object.assign({},cur,{marks:Object.assign({},cur.marks||{},marks)});
+      notify(c);
+    },
+    start:function(){ loaded=true; COLS.concat(['settings']).forEach(notify); return Promise.resolve(); }
+  };
+}
+function ed_canOffline(snap){
+  if(!snap||!snap.user||!snap.profile||!snap.raw) return false;
+  if(!ed_hasAuthKey()) return false;
+  var role=snap.role||snap.profile.role;
+  if(!role||role==='pending'||snap.profile.must_change) return false;
+  try{ var ts=+localStorage.getItem(TS_KEY)||0; if(remOn()&&ts&&(Date.now()-ts>REM_MS)) return false; }catch(e){}
+  return true;
+}
+function ed_offlineBoot(snap){
+  authHide();
+  SB.on=true; SB.client=null; SB.user=snap.user;
+  S.profile=snap.profile; S.role=snap.role||snap.profile.role; S.mode='shared'; S.offline=true; S.snapTs=snap.ts;
+  Data.db=ed_offAdapter(snap);
+  render();
+  Data.subscribe();
+  Data.db.start().then(function(){
+    return ed_qAll().then(function(jobs){ jobs.forEach(ed_applyLocal); });
+  });
+  ed_badge();
+  toast('أنت تعمل دون اتصال — ستُزامَن حصصك وطلابك المضافون عند عودة الاتصال.');
+}
+window.__edOffline=function(){
+  ed_snapLoad().then(function(snap){ if(ed_canOffline(snap)) ed_offlineBoot(snap); else toast('لا توجد بيانات محفوظة على هذا الجهاز. افتح التطبيق بالإنترنت مرة واحدة على الأقل.'); },function(){ toast('تعذّر فتح البيانات المحفوظة.'); });
+};
+var __ed_boot=boot;
+boot=function(){
+  if(location.search.indexOf('local=1')>=0||!SB_URL){ return __ed_boot(); }
+  if(navigator.onLine===false){
+    ed_snapLoad().then(function(snap){
+      if(ed_canOffline(snap)) ed_offlineBoot(snap);
+      else if(ed_hasAuthKey()) authScreen('لا يوجد اتصال','<p>افتح التطبيق مع الإنترنت مرة واحدة على الأقل ليُحفظ لديك نسخة من البيانات، ثم يعمل دون اتصال.</p><div class="mact"><button type="button" class="btn pri" onclick="location.reload()">إعادة المحاولة</button></div>');
+      else __ed_boot();
+    },function(){ __ed_boot(); });
+    return;
+  }
+  __ed_boot();
 };
 
 try{ boot(); }catch(e){ console.error('boot error:', e); try{ localBoot(); }catch(_){} }
